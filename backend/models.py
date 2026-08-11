@@ -9,6 +9,8 @@ class Person(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     amount_given = Column(Float, default=0)       # principal you lent them, one-time
+    date_given = Column(Date, nullable=True)       # the date you gave that amount
+    note = Column(String, default="")              # note about this loan (reason, terms, etc.)
     monthly_due = Column(Float, nullable=False)    # what they owe you each month
     due_day = Column(Integer, nullable=False)      # day of month (1-31) it's due
     archived = Column(Boolean, default=False)

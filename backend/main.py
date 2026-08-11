@@ -146,6 +146,7 @@ def create_person(body: schemas.PersonCreate, db: Session = Depends(get_db)):
         raise HTTPException(400, "due_day must be between 1 and 31")
     person = models.Person(
         name=body.name, amount_given=body.amount_given,
+        date_given=body.date_given, note=body.note,
         monthly_due=body.monthly_due, due_day=body.due_day,
     )
     db.add(person)
@@ -162,6 +163,52 @@ def get_person(person_id: int, db: Session = Depends(get_db)):
     if not person:
         raise HTTPException(404, "Person not found")
     return person
+@app.get("/api/people/{person_id}/export", dependencies=[Depends(auth.require_auth)])
+def export_person_history(person_id: int, db: Session = Depends(get_db)):
+    from io import BytesIO
+    from openpyxl import Workbook
+    from fastapi.responses import StreamingResponse
+
+    person = db.query(models.Person).get(person_id)
+    if not person:
+        raise HTTPException(404, "Person not found")
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "History"
+
+    ws.append(["Name", person.name])
+    ws.append(["Amount given", person.amount_given])
+    ws.append(["Date given", person.date_given.isoformat() if person.date_given else ""])
+    ws.append(["Note", person.note or ""])
+    ws.append(["Monthly due", person.monthly_due])
+    ws.append(["Due day", person.due_day])
+    ws.append([])
+    ws.append(["Month", "Due date", "Monthly due", "Paid amount", "Paid date", "Status"])
+
+    for h in sorted(person.payments, key=lambda x: x.month):
+        status = "Paid" if h.paid_amount >= person.monthly_due else ("Partial" if h.paid_amount > 0 else "Pending")
+        ws.append([
+            h.month,
+            h.due_date.isoformat() if h.due_date else "",
+            person.monthly_due,
+            h.paid_amount,
+            h.paid_date.isoformat() if h.paid_date else "",
+            status,
+        ])
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    safe_name = "".join(c for c in person.name if c.isalnum() or c in (" ", "_", "-")).strip().replace(" ", "_")
+    filename = f"{safe_name or 'person'}_history.xlsx"
+
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.post("/api/people/{person_id}/archive", response_model=schemas.PersonOut, dependencies=[Depends(auth.require_auth)])
