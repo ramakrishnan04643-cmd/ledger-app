@@ -206,10 +206,20 @@ function render() {
     <div id="tab-content"></div>
   `;
   const content = document.getElementById("tab-content");
-  if (state.tab === "overview") content.innerHTML = renderOverview();
-  else if (state.tab === "people") content.innerHTML = state.selectedPersonId ? renderPersonDetail() : renderPeopleList();
-  else if (state.tab === "expenses") content.innerHTML = renderExpenses();
-  else if (state.tab === "summary") content.innerHTML = renderSummary();
+  try {
+    if (state.tab === "overview") content.innerHTML = renderOverview();
+    else if (state.tab === "people") content.innerHTML = state.selectedPersonId ? renderPersonDetail() : renderPeopleList();
+    else if (state.tab === "expenses") content.innerHTML = renderExpenses();
+    else if (state.tab === "summary") content.innerHTML = renderSummary();
+  } catch (e) {
+    console.error("Render error:", e);
+    content.innerHTML = `
+      <div class="card" style="border-color:var(--red)">
+        <div style="color:var(--red);font-weight:600;font-size:13px;margin-bottom:8px">Something went wrong displaying this tab</div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:8px">This is a bug — please screenshot this box and send it over so it can be fixed.</div>
+        <div class="mono" style="font-size:11px;color:var(--muted-2);white-space:pre-wrap;word-break:break-word">${(e && e.message) || e}</div>
+      </div>`;
+  }
 
   renderModal();
 }
@@ -358,17 +368,17 @@ function renderPeopleList() {
 function toggleArchivedView() { state.showArchived = !state.showArchived; refresh(); }
 
 function personTotals(p) {
-  const collected = p.payments.reduce((s, h) => s + h.paid_amount, 0);
-  const cm = state.dashboard.month;
-  const expected = p.payments.filter(h => h.month <= cm).reduce((s) => s + p.monthly_due, 0);
+  const collected = (p.payments || []).reduce((s, h) => s + h.paid_amount, 0);
+  const cm = (state.dashboard && state.dashboard.month) || new Date().toISOString().slice(0, 7);
+  const expected = (p.payments || []).filter(h => h.month <= cm).reduce((s) => s + p.monthly_due, 0);
   const outstanding = Math.max(0, expected - collected);
   const principalOutstanding = Math.max(0, p.amount_given - collected);
   return { collected, outstanding, principalOutstanding };
 }
 
 function currentMonthStatus(p) {
-  const cm = state.dashboard.month;
-  const rec = p.payments.find(h => h.month === cm);
+  const cm = (state.dashboard && state.dashboard.month) || new Date().toISOString().slice(0, 7);
+  const rec = (p.payments || []).find(h => h.month === cm);
   if (!rec) return "pending";
   if (rec.paid_amount >= p.monthly_due) return "paid";
   if (rec.paid_amount > 0) return "partial";
@@ -395,18 +405,13 @@ function renderPersonDetail() {
         <h2 class="display" style="font-size:20px;margin:0 0 4px">${p.name}</h2>
         <div style="font-size:12px;color:var(--muted)">${fmtINR(p.monthly_due)}/month · due on the ${p.due_day}</div>
       </div>
-      <div style="display:flex;gap:8px">
-        <button class="btn-outline" onclick="downloadPersonHistory(${p.id})">⬇ Download XLSX</button>
-        <button class="btn-outline" style="border-color:${p.archived ? "var(--border)" : (fullySettled ? "var(--green)" : "var(--border)")};color:${p.archived ? "var(--muted)" : (fullySettled ? "var(--green)" : "var(--muted-2)")}" onclick="toggleArchive(${p.id})">
-          ${p.archived ? "↩ Restore" : "🗄 Archive"}
-        </button>
-      </div>
-    </div>
+      <button class="btn-outline" style="border-color:${p.archived ? "var(--border)" : (fullySettled ? "var(--green)" : "var(--border)")};color:${p.archived ? "var(--muted)" : (fullySettled ? "var(--green)" : "var(--muted-2)")}" onclick="toggleArchive(${p.id})">
+        ${p.archived ? "↩ Restore" : "🗄 Archive"}
       </button>
     </div>
     ${!p.archived && fullySettled ? `<div style="font-size:12px;color:var(--green);margin-bottom:12px">✓ Fully repaid — you can archive this person</div>` : ""}
     <div class="grid-3" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">
-      <div class="card"><div style="font-size:10px;color:var(--muted);margin-bottom:6px">AMOUNT GIVEN</div><div class="mono" style="font-size:16px;font-weight:600">${fmtINR(p.amount_given)}</div>${p.date_given ? `<div style="font-size:10px;color:var(--muted-2);margin-top:4px">on ${fmtDate(p.date_given)}</div>` : ""}${p.note ? `<div style="font-size:10px;color:var(--muted-2);margin-top:2px">${p.note}</div>` : ""}</div>
+      <div class="card"><div style="font-size:10px;color:var(--muted);margin-bottom:6px">AMOUNT GIVEN</div><div class="mono" style="font-size:16px;font-weight:600">${fmtINR(p.amount_given)}</div></div>
       <div class="card"><div style="font-size:10px;color:var(--muted);margin-bottom:6px">COLLECTED</div><div class="mono" style="font-size:16px;font-weight:600;color:var(--green)">${fmtINR(totals.collected)}</div></div>
       <div class="card"><div style="font-size:10px;color:var(--muted);margin-bottom:6px">OUTSTANDING</div><div class="mono" style="font-size:16px;font-weight:600;color:${totals.outstanding > 0 ? "var(--red)" : "var(--green)"}">${fmtINR(totals.outstanding)}</div></div>
     </div>
@@ -542,8 +547,6 @@ function renderModal() {
         <div class="modal-header"><div class="display" style="font-size:16px;font-weight:600">Add person</div><button onclick="closeModal()">✕</button></div>
         <div class="field"><label>NAME</label><input id="p-name" placeholder="e.g. Karthik"></div>
         <div class="field"><label>AMOUNT GIVEN (₹)</label><input id="p-given" type="number" placeholder="50000"></div>
-        <div class="field"><label>DATE GIVEN</label><input id="p-date-given" type="date"></div>
-        <div class="field"><label>NOTE</label><input id="p-note" placeholder="e.g. lent for shop rent"></div>
         <div class="field"><label>MONTHLY AMOUNT (₹)</label><input id="p-due" type="number" placeholder="5000"></div>
         <div class="field"><label>DUE DAY OF MONTH (1–31)</label><input id="p-day" type="number" placeholder="5"></div>
         <div id="p-error" style="color:var(--red);font-size:12px;margin-bottom:8px;min-height:14px"></div>
@@ -579,8 +582,6 @@ function renderModal() {
 async function submitAddPerson() {
   const name = document.getElementById("p-name").value.trim();
   const given = Number(document.getElementById("p-given").value || 0);
-  const dateGiven = document.getElementById("p-date-given").value || null;
-  const note = document.getElementById("p-note").value.trim();
   const due = Number(document.getElementById("p-due").value);
   const day = Number(document.getElementById("p-day").value);
   if (!name || !due || !day) {
@@ -588,15 +589,12 @@ async function submitAddPerson() {
     return;
   }
   try {
-    await api.post("/api/people", { name, amount_given: given, date_given: dateGiven, note, monthly_due: due, due_day: day });
+    await api.post("/api/people", { name, amount_given: given, monthly_due: due, due_day: day });
     closeModal();
     await refresh();
   } catch (e) {
     document.getElementById("p-error").textContent = e.message;
   }
-}
-function downloadPersonHistory(personId) {
-  window.open(`/api/people/${personId}/export`, "_blank");
 }
 
 async function submitAddExpense() {

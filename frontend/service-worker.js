@@ -2,7 +2,13 @@
 // looks right even on a flaky connection. Deliberately does NOT cache
 // anything under /api/ — your financial data should always come fresh
 // from the server, never from a cache.
-const CACHE_NAME = "ledger-shell-v1";
+//
+// Bump CACHE_NAME whenever you change frontend files so old caches get
+// cleared out. Uses network-first: always tries to fetch the latest file,
+// and only falls back to the cached copy if the network request fails
+// (e.g. offline). This means you always see your latest changes and the
+// cache is purely a fallback, not a way updates can get "stuck".
+const CACHE_NAME = "ledger-shell-v2";
 const SHELL_FILES = [
   "/",
   "/static/style.css",
@@ -35,6 +41,12 @@ self.addEventListener("fetch", (event) => {
   if (url.pathname.startsWith("/api/")) return;
 
   event.respondWith(
-    caches.match(event.request).then((cached) => cached || fetch(event.request))
+    fetch(event.request)
+      .then((response) => {
+        const copy = response.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        return response;
+      })
+      .catch(() => caches.match(event.request))
   );
 });
