@@ -147,13 +147,16 @@ const app = document.getElementById("app");
 async function init() {
   try {
     const status = await api.get("/api/auth/status");
-    state.passwordSet = status.password_set;
-    if (!status.password_set) {
+    // Handles both snake_case and camelCase backend responses
+    const isPasswordSet = status.password_set ?? status.passwordSet ?? status.has_password;
+
+    if (!isPasswordSet) {
       state.authed = false;
       renderSetup();
       return;
     }
-    // try a protected call to see if our cookie is still valid
+
+    // Try protected call to check existing session
     try {
       await api.get("/api/dashboard");
       state.authed = true;
@@ -161,13 +164,12 @@ async function init() {
       render();
     } catch {
       state.authed = false;
-      renderLogin();
+      renderLogin(); // Correctly routes to Login!
     }
   } catch (e) {
     app.innerHTML = `<div class="card">Couldn't reach the server. Is the backend running? (${e.message})</div>`;
   }
 }
-
 async function loadAll() {
   const [dashboard, people, expenses, summary, categories, savingsLog] = await Promise.all([
     api.get("/api/dashboard"),
