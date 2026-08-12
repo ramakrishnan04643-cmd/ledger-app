@@ -147,16 +147,13 @@ const app = document.getElementById("app");
 async function init() {
   try {
     const status = await api.get("/api/auth/status");
-    // Handles both snake_case and camelCase backend responses
-    const isPasswordSet = status.password_set ?? status.passwordSet ?? status.has_password;
-
-    if (!isPasswordSet) {
+    state.passwordSet = status.password_set;
+    if (!status.password_set) {
       state.authed = false;
       renderSetup();
       return;
     }
-
-    // Try protected call to check existing session
+    // try a protected call to see if our cookie is still valid
     try {
       await api.get("/api/dashboard");
       state.authed = true;
@@ -164,20 +161,21 @@ async function init() {
       render();
     } catch {
       state.authed = false;
-      renderLogin(); // Correctly routes to Login!
+      renderLogin();
     }
   } catch (e) {
     app.innerHTML = `<div class="card">Couldn't reach the server. Is the backend running? (${e.message})</div>`;
   }
 }
+
 async function loadAll() {
   const [dashboard, people, expenses, summary, categories, savingsLog] = await Promise.all([
     api.get("/api/dashboard"),
     api.get(`/api/people?include_archived=${state.showArchived}`),
     api.get("/api/expenses"),
     api.get("/api/summary"),
-    api.get("/api/expense-categories").catch(() => []), // fallback if category fetch fails
-    api.get("/api/savings-log").catch(() => []),
+    api.get("/api/expense-categories"),
+    api.get("/api/savings-log"),
   ]);
   state.dashboard = dashboard;
   state.people = people;
@@ -185,12 +183,7 @@ async function loadAll() {
   state.summary = summary;
   state.categories = categories;
   state.savingsLog = savingsLog;
-  
-  try {
-    await checkPushStatus();
-  } catch (e) {
-    console.warn("Push check failed:", e);
-  }
+  await checkPushStatus();
 }
 
 async function refresh() {
@@ -250,17 +243,13 @@ function renderLogin() {
 
 async function doLogin() {
   const pw = document.getElementById("login-pw").value;
-  const errEl = document.getElementById("login-error");
-  errEl.textContent = "";
-
   try {
     await api.post("/api/auth/login", { password: pw });
     state.authed = true;
     await loadAll();
     render();
   } catch (e) {
-    state.authed = false;
-    errEl.textContent = e.message || "Invalid password or failed to load data.";
+    document.getElementById("login-error").textContent = e.message;
   }
 }
 
