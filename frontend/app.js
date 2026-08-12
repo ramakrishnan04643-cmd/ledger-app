@@ -45,10 +45,7 @@ const STATUS_META = {
 };
 
 // ---------------------------------------------------------------------------
-// push notifications (real phone push — works even when the app is closed,
-// via the service worker + your browser's push service). Requires HTTPS
-// or localhost; over plain HTTP (e.g. a bare Tailscale IP) this silently
-// reports unsupported, which the UI explains.
+// push notifications
 // ---------------------------------------------------------------------------
 function pushSupported() {
   return "serviceWorker" in navigator && "PushManager" in window && window.isSecureContext;
@@ -120,7 +117,7 @@ const DEFAULT_EXPENSE_CATS = ["Rent", "Groceries", "Travel", "Utilities", "Famil
 // state
 // ---------------------------------------------------------------------------
 const state = {
-  authed: null,        // null = unknown, true/false once checked
+  authed: null,        // null = unknown/loading, true/false once resolved
   passwordSet: null,
   tab: "overview",
   people: [],
@@ -131,7 +128,7 @@ const state = {
   savingsLog: [],
   dashboard: null,
   summary: null,
-  modal: null,          // 'addPerson' | 'addExpense' | 'recordPayment' | 'addSavingsEntry' | 'manageCategories'
+  modal: null,          // 'addPerson' | 'addExpense' | 'recordPayment' | 'addSavingsEntry'
   payModalCtx: null,    // { personId, month, remaining }
   editingGoal: false,
   showCategoryManager: false,
@@ -148,23 +145,30 @@ async function init() {
   try {
     const status = await api.get("/api/auth/status");
     state.passwordSet = status.password_set;
+    
     if (!status.password_set) {
       state.authed = false;
       renderSetup();
       return;
     }
-    // try a protected call to see if our cookie is still valid
+    
+    // Check authentication status
     try {
-      await api.get("/api/dashboard");
-      state.authed = true;
       await loadAll();
+      state.authed = true;
       render();
-    } catch {
+    } catch (err) {
       state.authed = false;
       renderLogin();
     }
   } catch (e) {
-    app.innerHTML = `<div class="card">Couldn't reach the server. Is the backend running? (${e.message})</div>`;
+    state.authed = false;
+    app.innerHTML = `
+      <div class="card" style="margin:20px;border-color:var(--red)">
+        <h3 style="color:var(--red);margin-top:0">Unable to connect</h3>
+        <p style="color:var(--muted);font-size:13px">Could not reach the backend server (${e.message}). Ensure your server is running and refresh.</p>
+        <button class="btn-primary" onclick="init()">Retry Connection</button>
+      </div>`;
   }
 }
 
@@ -263,7 +267,14 @@ async function doLogout() {
 // main render
 // ---------------------------------------------------------------------------
 function render() {
-  if (state.authed === false) { renderLogin(); return; }
+  if (state.authed === false) { 
+    if (!state.passwordSet) {
+      renderSetup();
+    } else {
+      renderLogin(); 
+    }
+    return; 
+  }
   if (state.authed !== true) return;
 
   app.innerHTML = `
@@ -296,7 +307,7 @@ function render() {
     content.innerHTML = `
       <div class="card" style="border-color:var(--red)">
         <div style="color:var(--red);font-weight:600;font-size:13px;margin-bottom:8px">Something went wrong displaying this tab</div>
-        <div style="font-size:12px;color:var(--muted);margin-bottom:8px">This is a bug — please screenshot this box and send it over so it can be fixed.</div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Details below:</div>
         <div class="mono" style="font-size:11px;color:var(--muted-2);white-space:pre-wrap;word-break:break-word">${(e && e.message) || e}</div>
       </div>`;
   }
@@ -320,7 +331,7 @@ function setTab(id) {
 function renderOverview() {
   const d = state.dashboard;
   if (!d) return "";
-  const notifs = d.notifications;
+  const notifs = d.notifications || { overdue: [], due_soon: [], pending: [] };
   const hasNotifs = notifs.overdue.length || notifs.due_soon.length || notifs.pending.length;
   const notifPermHtml = !pushSupported() ? `
     <div class="card" style="margin-bottom:14px">
@@ -362,17 +373,17 @@ function renderOverview() {
       <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-end">
         <div>
           <div style="font-size:10px;color:var(--muted-2);margin-bottom:4px">CASH / BANK</div>
-          <input id="cash-balance-input" class="mono" type="number" style="width:110px" value="${d.net_worth.cash_balance}" onchange="updateCashBalance(this.value)">
+          <input id="cash-balance-input" class="mono" type="number" style="width:110px" value="${(d.net_worth && d.net_worth.cash_balance) || 0}" onchange="updateCashBalance(this.value)">
         </div>
         <div style="font-size:18px;color:var(--muted-2)">+</div>
         <div>
           <div style="font-size:10px;color:var(--muted-2);margin-bottom:4px">OUT ON LOAN</div>
-          <div class="mono" style="font-size:17px;font-weight:600">${fmtINR(d.net_worth.principal_out)}</div>
+          <div class="mono" style="font-size:17px;font-weight:600">${fmtINR((d.net_worth && d.net_worth.principal_out) || 0)}</div>
         </div>
         <div style="font-size:18px;color:var(--muted-2)">=</div>
         <div>
           <div style="font-size:10px;color:var(--muted-2);margin-bottom:4px">NET WORTH</div>
-          <div class="mono" style="font-size:18px;font-weight:700;color:var(--gold)">${fmtINR(d.net_worth.net_worth)}</div>
+          <div class="mono" style="font-size:18px;font-weight:700;color:var(--gold)">${fmtINR((d.net_worth && d.net_worth.net_worth) || 0)}</div>
         </div>
       </div>
     </div>
@@ -385,16 +396,16 @@ function renderOverview() {
       ${state.editingGoal ? `
         <div style="display:flex;gap:12px;margin-bottom:10px">
           <div><div style="font-size:10px;color:var(--muted-2);margin-bottom:4px">CURRENT</div>
-            <input class="mono" type="number" style="width:120px" value="${d.savings_goal.current}" onchange="updateSavings('current_savings', this.value)"></div>
+            <input class="mono" type="number" style="width:120px" value="${d.savings_goal ? d.savings_goal.current : 0}" onchange="updateSavings('current_savings', this.value)"></div>
           <div><div style="font-size:10px;color:var(--muted-2);margin-bottom:4px">TARGET</div>
-            <input class="mono" type="number" style="width:120px" value="${d.savings_goal.goal}" onchange="updateSavings('savings_goal', this.value)"></div>
+            <input class="mono" type="number" style="width:120px" value="${d.savings_goal ? d.savings_goal.goal : 0}" onchange="updateSavings('savings_goal', this.value)"></div>
         </div>` : `
         <div style="display:flex;justify-content:space-between;margin-bottom:8px">
-          <span class="mono" style="font-size:15px;font-weight:600">${fmtINR(d.savings_goal.current)}</span>
-          <span class="mono" style="font-size:13px;color:var(--muted)">of ${fmtINR(d.savings_goal.goal)}</span>
+          <span class="mono" style="font-size:15px;font-weight:600">${fmtINR(d.savings_goal ? d.savings_goal.current : 0)}</span>
+          <span class="mono" style="font-size:13px;color:var(--muted)">of ${fmtINR(d.savings_goal ? d.savings_goal.goal : 0)}</span>
         </div>`}
-      <div class="progress-bar"><div class="progress-fill" style="width:${Math.min(100, d.savings_goal.pct)}%"></div></div>
-      <div style="font-size:11px;color:var(--muted-2);margin-top:6px">${d.savings_goal.pct}% of the way there</div>
+      <div class="progress-bar"><div class="progress-fill" style="width:${Math.min(100, (d.savings_goal ? d.savings_goal.pct : 0))}%"></div></div>
+      <div style="font-size:11px;color:var(--muted-2);margin-top:6px">${(d.savings_goal ? d.savings_goal.pct : 0)}% of the way there</div>
     </div>
 
     <div class="card" style="margin-bottom:14px">
@@ -417,7 +428,7 @@ function renderOverview() {
         <div class="label-sm" style="margin:0">THIS MONTH'S STATUS AT A GLANCE</div>
         <button class="btn-outline" onclick="openModal('addPerson')">+ Add person</button>
       </div>
-      ${d.people_status.map(p => {
+      ${(d.people_status || []).map(p => {
         const meta = STATUS_META[p.status] || { label: p.status, color: "var(--muted)" };
         const right = p.status === "partial" ? `${fmtINR(p.paid_amount)} / ${fmtINR(p.monthly_due)}` : meta.label;
         return `<div class="row">
@@ -516,7 +527,7 @@ function renderPersonDetail() {
   const totals = personTotals(p);
   const fullySettled = totals.principalOutstanding === 0;
 
-  const history = [...p.payments].sort((a, b) => b.month.localeCompare(a.month));
+  const history = [...(p.payments || [])].sort((a, b) => b.month.localeCompare(a.month));
 
   return `
     <button class="btn-outline" style="border:none;padding:0;margin-bottom:14px" onclick="backToPeople()">&larr; Back to people</button>
@@ -598,7 +609,7 @@ async function toggleArchive(id) {
 // expenses
 // ---------------------------------------------------------------------------
 function renderExpenses() {
-  const cm = state.dashboard.month;
+  const cm = (state.dashboard && state.dashboard.month) || new Date().toISOString().slice(0, 7);
   const monthTotal = state.expenses.filter(e => e.date.startsWith(cm)).reduce((s, e) => s + e.amount, 0);
   return `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
@@ -673,209 +684,174 @@ function renderSummary() {
         <div class="label-sm" style="margin:0">FY ${new Date(s.fy_start).getFullYear()}–${String(new Date(s.fy_end).getFullYear()).slice(2)} SUMMARY</div>
         <button class="btn-outline" style="color:var(--gold);border-color:#3A3B6A" onclick="downloadBackup()">⬇ Export all data</button>
       </div>
-      <div style="font-size:11px;color:var(--muted-2);margin-bottom:14px">${fmtDate(s.fy_start)} – ${fmtDate(s.fy_end)}, based on entries so far</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
-        <div><div style="font-size:10px;color:var(--muted-2);margin-bottom:4px">COLLECTED (ALL PEOPLE)</div><div class="mono" style="font-size:18px;font-weight:600;color:var(--green)">${fmtINR(s.total_collected)}</div></div>
-        <div><div style="font-size:10px;color:var(--muted-2);margin-bottom:4px">TOTAL EXPENSES</div><div class="mono" style="font-size:18px;font-weight:600;color:var(--red)">${fmtINR(s.total_expenses)}</div></div>
-      </div>
-      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">EXPENSES BY CATEGORY</div>
-      ${s.by_category.map(c => `
-        <div style="margin-bottom:8px">
-          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
-            <span style="color:#B7BCE0">${c.category}</span><span class="mono">${fmtINR(c.amount)}</span>
-          </div>
-          <div style="height:5px;background:var(--bg);border-radius:3px;overflow:hidden">
-            <div style="height:100%;width:${s.total_expenses ? (c.amount / s.total_expenses) * 100 : 0}%;background:var(--blue);border-radius:3px"></div>
-          </div>
-        </div>`).join("") || `<div style="color:var(--muted-2);font-size:12px">No expenses yet this year.</div>`}
-    </div>
-    <div class="card" style="display:flex;gap:10px">
-      <span>🔒</span>
-      <div style="font-size:12px;color:var(--muted);line-height:1.5">
-        This backup file contains every person, payment, and expense you've recorded. Keep it somewhere private.
+      <div style="font-size:11px;color:var(--muted-2);margin-bottom:14px">${fmtDate(s.fy_start)} – ${fmtDate(s.fy_end)}, based on payments recorded</div>
+      <div class="grid-3" style="margin-bottom:14px">
+        <div class="card"><div class="label-sm">TOTAL COLLECTED</div><div class="big-num mono" style="color:var(--green)">${fmtINR(s.total_collected)}</div></div>
+        <div class="card"><div class="label-sm">TOTAL EXPENSES</div><div class="big-num mono" style="color:var(--red)">${fmtINR(s.total_expenses)}</div></div>
+        <div class="card"><div class="label-sm">NET SAVINGS</div><div class="big-num mono" style="color:var(--gold)">${fmtINR(s.net_savings)}</div></div>
       </div>
     </div>
   `;
-}
-
-function downloadBackup() {
-  window.open("/api/backup", "_blank");
 }
 
 // ---------------------------------------------------------------------------
 // modals
 // ---------------------------------------------------------------------------
 function openModal(name) { state.modal = name; render(); }
-function closeModal() { state.modal = null; state.payModalCtx = null; render(); }
+
+function closeModal() {
+  state.modal = null;
+  state.payModalCtx = null;
+  const existing = document.querySelector(".modal-backdrop");
+  if (existing) existing.remove();
+}
 
 function openPayModal(personId, month, remaining) {
-  state.modal = "recordPayment";
   state.payModalCtx = { personId, month, remaining };
-  render();
+  openModal('recordPayment');
 }
 
 function renderModal() {
-  let existing = document.querySelector(".modal-overlay");
+  const existing = document.querySelector(".modal-backdrop");
   if (existing) existing.remove();
+
   if (!state.modal) return;
+  
+  let modalContent = "";
+  if (state.modal === "addPerson") modalContent = renderAddPersonModal();
+  else if (state.modal === "addExpense") modalContent = renderAddExpenseModal();
+  else if (state.modal === "recordPayment") modalContent = renderRecordPaymentModal();
+  else if (state.modal === "addSavingsEntry") modalContent = renderAddSavingsModal();
 
-  const overlay = document.createElement("div");
-  overlay.className = "modal-overlay";
-  overlay.onclick = (e) => { if (e.target === overlay) closeModal(); };
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
+  backdrop.onclick = (e) => { if (e.target === backdrop) closeModal(); };
+  backdrop.innerHTML = `
+    <div class="modal card">
+      <button class="modal-close" onclick="closeModal()">✕</button>
+      ${modalContent}
+    </div>`;
+  document.body.appendChild(backdrop);
+}
 
-  if (state.modal === "addPerson") {
-    overlay.innerHTML = `
-      <div class="modal">
-        <div class="modal-header"><div class="display" style="font-size:16px;font-weight:600">Add person</div><button onclick="closeModal()">✕</button></div>
-        <div class="field"><label>NAME</label><input id="p-name" placeholder="e.g. Karthik"></div>
-        <div class="field"><label>AMOUNT GIVEN (₹)</label><input id="p-given" type="number" placeholder="50000"></div>
-        <div class="field"><label>MONTHLY AMOUNT (₹)</label><input id="p-due" type="number" placeholder="5000"></div>
-        <div class="field"><label>DUE DAY OF MONTH (1–31)</label><input id="p-day" type="number" placeholder="5"></div>
-        <div id="p-error" style="color:var(--red);font-size:12px;margin-bottom:8px;min-height:14px"></div>
-        <button class="btn-primary" style="width:100%;justify-content:center" onclick="submitAddPerson()">Save person</button>
-      </div>`;
-  } else if (state.modal === "addExpense") {
-    const today = new Date().toISOString().slice(0, 10);
-    const cats = state.categories.length ? state.categories.map(c => c.name) : DEFAULT_EXPENSE_CATS;
-    overlay.innerHTML = `
-      <div class="modal">
-        <div class="modal-header"><div class="display" style="font-size:16px;font-weight:600">Add expense</div><button onclick="closeModal()">✕</button></div>
-        <div class="field"><label>DATE</label><input id="e-date" type="date" value="${today}"></div>
-        <div class="field">
-          <label>CATEGORY</label>
-          <div style="display:flex;gap:6px">
-            <select id="e-cat" style="flex:1">${cats.map(c => `<option value="${c}">${c}</option>`).join("")}</select>
-            <button type="button" class="btn-outline" style="white-space:nowrap" onclick="toggleNewCatInput()">+ New</button>
-          </div>
-          <div id="e-newcat-wrap" style="display:none;margin-top:8px;gap:6px" >
-            <input id="e-newcat" placeholder="e.g. Medical" style="margin-bottom:6px">
-            <button type="button" class="btn-outline" onclick="addNewCategoryInline()">Add category</button>
-          </div>
-        </div>
-        <div class="field"><label>AMOUNT (₹)</label><input id="e-amount" type="number" placeholder="0"></div>
-        <div class="field"><label>NOTE</label><input id="e-note" placeholder="what was this for?"></div>
-        <div id="e-error" style="color:var(--red);font-size:12px;margin-bottom:8px;min-height:14px"></div>
-        <button class="btn-primary" style="width:100%;justify-content:center" onclick="submitAddExpense()">Save expense</button>
-      </div>`;
-  } else if (state.modal === "recordPayment") {
-    const ctx = state.payModalCtx;
-    const today = new Date().toISOString().slice(0, 10);
-    overlay.innerHTML = `
-      <div class="modal">
-        <div class="modal-header"><div class="display" style="font-size:16px;font-weight:600">Record payment</div><button onclick="closeModal()">✕</button></div>
-        <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Remaining due: ${fmtINR(ctx.remaining)}</div>
-        <div class="field"><label>AMOUNT RECEIVED (₹)</label><input id="pay-amount" type="number" value="${ctx.remaining}"></div>
-        <div class="field"><label>DATE ENTERED</label><input id="pay-date" type="date" value="${today}"></div>
-        <div class="field"><label>NOTE (optional)</label><input id="pay-note" placeholder="e.g. cash handover, UPI"></div>
-        <div style="font-size:11px;color:var(--muted-2);margin-bottom:16px">Enter less than the full amount to record a partial payment — the rest stays outstanding.</div>
-        <div id="pay-error" style="color:var(--red);font-size:12px;margin-bottom:8px;min-height:14px"></div>
-        <button class="btn-primary" style="width:100%;justify-content:center;background:var(--green)" onclick="submitPayment()">Save payment</button>
-      </div>`;
-  } else if (state.modal === "addSavingsEntry") {
-    const today = new Date().toISOString().slice(0, 10);
-    overlay.innerHTML = `
-      <div class="modal">
-        <div class="modal-header"><div class="display" style="font-size:16px;font-weight:600">Add savings entry</div><button onclick="closeModal()">✕</button></div>
-        <div class="field"><label>DATE</label><input id="sv-date" type="date" value="${today}"></div>
-        <div class="field"><label>AMOUNT (₹)</label><input id="sv-amount" type="number" placeholder="0"></div>
-        <div class="field"><label>NOTE</label><input id="sv-note" placeholder="e.g. leftover after expenses"></div>
-        <div id="sv-error" style="color:var(--red);font-size:12px;margin-bottom:8px;min-height:14px"></div>
-        <button class="btn-primary" style="width:100%;justify-content:center" onclick="submitSavingsEntry()">Save entry</button>
-      </div>`;
-  }
-  document.body.appendChild(overlay);
+function renderAddPersonModal() {
+  return `
+    <h3 class="display" style="margin:0 0 14px">Add Person</h3>
+    <div class="field"><label>NAME</label><input id="p-name" type="text" autofocus></div>
+    <div class="field"><label>PRINCIPAL AMOUNT (GIVEN)</label><input id="p-given" type="number" value="0"></div>
+    <div class="field"><label>MONTHLY DUE</label><input id="p-due" type="number" value="0"></div>
+    <div class="field"><label>DUE DAY OF MONTH (1-31)</label><input id="p-day" type="number" value="1" min="1" max="31"></div>
+    <div id="modal-error" style="color:var(--red);font-size:12px;margin-bottom:10px"></div>
+    <button class="btn-primary" style="width:100%" onclick="submitAddPerson()">Save</button>
+  `;
 }
 
 async function submitAddPerson() {
   const name = document.getElementById("p-name").value.trim();
-  const given = Number(document.getElementById("p-given").value || 0);
-  const due = Number(document.getElementById("p-due").value);
-  const day = Number(document.getElementById("p-day").value);
-  if (!name || !due || !day) {
-    document.getElementById("p-error").textContent = "Name, monthly amount, and due day are required.";
-    return;
-  }
+  const amount_given = Number(document.getElementById("p-given").value);
+  const monthly_due = Number(document.getElementById("p-due").value);
+  const due_day = Number(document.getElementById("p-day").value);
+
+  if (!name) { document.getElementById("modal-error").textContent = "Name is required"; return; }
+
   try {
-    await api.post("/api/people", { name, amount_given: given, monthly_due: due, due_day: day });
+    await api.post("/api/people", { name, amount_given, monthly_due, due_day });
     closeModal();
     await refresh();
   } catch (e) {
-    document.getElementById("p-error").textContent = e.message;
+    document.getElementById("modal-error").textContent = e.message;
   }
+}
+
+function renderAddExpenseModal() {
+  const today = new Date().toISOString().slice(0, 10);
+  const catOptions = state.categories.length ? state.categories : DEFAULT_EXPENSE_CATS.map((c) => ({ id: c, name: c }));
+  return `
+    <h3 class="display" style="margin:0 0 14px">Add Expense</h3>
+    <div class="field"><label>AMOUNT</label><input id="e-amount" type="number" autofocus></div>
+    <div class="field"><label>CATEGORY</label>
+      <select id="e-category">
+        ${catOptions.map(c => `<option value="${c.name}">${c.name}</option>`).join("")}
+      </select>
+    </div>
+    <div class="field"><label>DATE</label><input id="e-date" type="date" value="${today}"></div>
+    <div class="field"><label>NOTE / DESCRIPTION</label><input id="e-note" type="text"></div>
+    <div id="modal-error" style="color:var(--red);font-size:12px;margin-bottom:10px"></div>
+    <button class="btn-primary" style="width:100%" onclick="submitAddExpense()">Save Expense</button>
+  `;
 }
 
 async function submitAddExpense() {
-  const date = document.getElementById("e-date").value;
-  const category = document.getElementById("e-cat").value;
   const amount = Number(document.getElementById("e-amount").value);
+  const category = document.getElementById("e-category").value;
+  const date = document.getElementById("e-date").value;
   const note = document.getElementById("e-note").value.trim();
-  if (!date || !amount) {
-    document.getElementById("e-error").textContent = "Date and amount are required.";
-    return;
-  }
+
+  if (!amount) { document.getElementById("modal-error").textContent = "Amount is required"; return; }
+
   try {
-    await api.post("/api/expenses", { date, category, amount, note });
+    await api.post("/api/expenses", { amount, category, date, note });
     closeModal();
     await refresh();
   } catch (e) {
-    document.getElementById("e-error").textContent = e.message;
+    document.getElementById("modal-error").textContent = e.message;
   }
 }
 
-async function submitPayment() {
-  const amount = Number(document.getElementById("pay-amount").value);
-  if (!amount || amount <= 0) {
-    document.getElementById("pay-error").textContent = "Enter a valid amount.";
-    return;
-  }
-  const paid_date = document.getElementById("pay-date").value || undefined;
-  const note = document.getElementById("pay-note").value.trim();
+function renderRecordPaymentModal() {
   const ctx = state.payModalCtx;
+  const today = new Date().toISOString().slice(0, 10);
+  return `
+    <h3 class="display" style="margin:0 0 14px">Record Payment</h3>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Recording for ${monthLabel(ctx.month)}</div>
+    <div class="field"><label>AMOUNT PAID</label><input id="pay-amount" type="number" value="${ctx.remaining}" autofocus></div>
+    <div class="field"><label>PAYMENT DATE</label><input id="pay-date" type="date" value="${today}"></div>
+    <div class="field"><label>NOTE</label><input id="pay-note" type="text" placeholder="Optional"></div>
+    <div id="modal-error" style="color:var(--red);font-size:12px;margin-bottom:10px"></div>
+    <button class="btn-primary" style="width:100%" onclick="submitRecordPayment()">Save Payment</button>
+  `;
+}
+
+async function submitRecordPayment() {
+  const ctx = state.payModalCtx;
+  const amount = Number(document.getElementById("pay-amount").value);
+  const date = document.getElementById("pay-date").value;
+  const note = document.getElementById("pay-note").value.trim();
+
   try {
-    await api.post(`/api/people/${ctx.personId}/payments`, { month: ctx.month, amount, note, paid_date });
+    await api.post(`/api/people/${ctx.personId}/payments`, { month: ctx.month, amount, date, note });
     closeModal();
     await refresh();
   } catch (e) {
-    document.getElementById("pay-error").textContent = e.message;
+    document.getElementById("modal-error").textContent = e.message;
   }
 }
 
-function toggleNewCatInput() {
-  const wrap = document.getElementById("e-newcat-wrap");
-  wrap.style.display = wrap.style.display === "none" ? "flex" : "none";
-  wrap.style.flexDirection = "column";
+function renderAddSavingsModal() {
+  const today = new Date().toISOString().slice(0, 10);
+  return `
+    <h3 class="display" style="margin:0 0 14px">Add Savings Entry</h3>
+    <div class="field"><label>AMOUNT SAVED</label><input id="s-amount" type="number" autofocus></div>
+    <div class="field"><label>DATE</label><input id="s-date" type="date" value="${today}"></div>
+    <div class="field"><label>NOTE</label><input id="s-note" type="text" placeholder="e.g. Monthly transfer to FD"></div>
+    <div id="modal-error" style="color:var(--red);font-size:12px;margin-bottom:10px"></div>
+    <button class="btn-primary" style="width:100%" onclick="submitAddSavings()">Save Entry</button>
+  `;
 }
 
-async function addNewCategoryInline() {
-  const name = document.getElementById("e-newcat").value.trim();
-  if (!name) return;
+async function submitAddSavings() {
+  const amount = Number(document.getElementById("s-amount").value);
+  const date = document.getElementById("s-date").value;
+  const note = document.getElementById("s-note").value.trim();
+
+  if (!amount) { document.getElementById("modal-error").textContent = "Amount is required"; return; }
+
   try {
-    const cat = await api.post("/api/expense-categories", { name });
-    state.categories.push(cat);
-    state.categories.sort((a, b) => a.name.localeCompare(b.name));
-    renderModal(); // re-render modal with the new category available
-    const select = document.getElementById("e-cat");
-    if (select) select.value = cat.name;
-    document.getElementById("e-newcat-wrap").style.display = "none";
-  } catch (e) {
-    alert(e.message);
-  }
-}
-
-async function submitSavingsEntry() {
-  const date = document.getElementById("sv-date").value;
-  const amount = Number(document.getElementById("sv-amount").value);
-  const note = document.getElementById("sv-note").value.trim();
-  if (!date || !amount) {
-    document.getElementById("sv-error").textContent = "Date and amount are required.";
-    return;
-  }
-  try {
-    await api.post("/api/savings-log", { date, amount, note });
+    await api.post("/api/savings-log", { amount, date, note });
     closeModal();
     await refresh();
   } catch (e) {
-    document.getElementById("sv-error").textContent = e.message;
+    document.getElementById("modal-error").textContent = e.message;
   }
 }
 
@@ -884,13 +860,9 @@ async function deleteSavingsEntry(id) {
   await refresh();
 }
 
-// ---------------------------------------------------------------------------
-init();
-
-// Register service worker for app-shell caching (needs HTTPS or localhost —
-// silently no-ops otherwise, which is fine, the app still works normally).
-if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/static/service-worker.js").catch(() => {});
-  });
+function downloadBackup() {
+  window.location.href = "/api/backup";
 }
+
+// Kick off initialization
+init();
