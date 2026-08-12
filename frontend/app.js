@@ -144,20 +144,21 @@ const app = document.getElementById("app");
 async function init() {
   try {
     const status = await api.get("/api/auth/status");
-    state.passwordSet = status.password_set;
+    state.passwordSet = Boolean(status.password_set);
     
-    if (!status.password_set) {
+    if (!state.passwordSet) {
       state.authed = false;
       renderSetup();
       return;
     }
     
-    // Check authentication status
+    // Password is set, attempt to fetch protected data
     try {
       await loadAll();
       state.authed = true;
       render();
     } catch (err) {
+      // 401 Unauthorized or failure to fetch loads login screen directly
       state.authed = false;
       renderLogin();
     }
@@ -220,11 +221,18 @@ async function doSetup() {
   const pw = document.getElementById("setup-pw").value;
   try {
     await api.post("/api/auth/set-password", { password: pw });
+    state.passwordSet = true;
     state.authed = true;
     await loadAll();
     render();
   } catch (e) {
-    document.getElementById("setup-error").textContent = e.message;
+    if (e.message && e.message.includes("already set")) {
+      state.passwordSet = true;
+      state.authed = false;
+      renderLogin();
+    } else {
+      document.getElementById("setup-error").textContent = e.message;
+    }
   }
 }
 
