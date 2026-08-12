@@ -174,8 +174,8 @@ async function loadAll() {
     api.get(`/api/people?include_archived=${state.showArchived}`),
     api.get("/api/expenses"),
     api.get("/api/summary"),
-    api.get("/api/expense-categories"),
-    api.get("/api/savings-log"),
+    api.get("/api/expense-categories").catch(() => []), // fallback if category fetch fails
+    api.get("/api/savings-log").catch(() => []),
   ]);
   state.dashboard = dashboard;
   state.people = people;
@@ -183,7 +183,12 @@ async function loadAll() {
   state.summary = summary;
   state.categories = categories;
   state.savingsLog = savingsLog;
-  await checkPushStatus();
+  
+  try {
+    await checkPushStatus();
+  } catch (e) {
+    console.warn("Push check failed:", e);
+  }
 }
 
 async function refresh() {
@@ -243,13 +248,17 @@ function renderLogin() {
 
 async function doLogin() {
   const pw = document.getElementById("login-pw").value;
+  const errEl = document.getElementById("login-error");
+  errEl.textContent = "";
+
   try {
     await api.post("/api/auth/login", { password: pw });
     state.authed = true;
     await loadAll();
     render();
   } catch (e) {
-    document.getElementById("login-error").textContent = e.message;
+    state.authed = false;
+    errEl.textContent = e.message || "Invalid password or failed to load data.";
   }
 }
 
