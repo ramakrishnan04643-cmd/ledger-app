@@ -4,3 +4,7 @@ sqlalchemy==2.0.35
 python-dotenv==1.0.1
 itsdangerous==2.2.0
 pydantic==2.9.2
+openpyxl==3.1.5
+pywebpush==2.0.3
+apscheduler==3.10.4
+openpyxl==3.1.5

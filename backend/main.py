@@ -7,12 +7,17 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+from apscheduler.schedulers.background import BackgroundScheduler
+import logging
 import os
 
-from database import engine, get_db, Base
+from database import engine, get_db, Base, SessionLocal
 import models
 import schemas
 import auth
+import push
+
+logger = logging.getLogger("ledger.main")
 
 Base.metadata.create_all(bind=engine)
 
@@ -203,10 +208,122 @@ def record_payment(person_id: int, body: schemas.RecordPaymentRequest, db: Sessi
         db.add(rec)
 
     rec.paid_amount += body.amount
-    rec.paid_date = date.today()
+    rec.paid_date = body.paid_date or date.today()
+    if body.note:
+        # append rather than overwrite, so a history of notes across partial
+        # payments in the same month isn't lost
+        rec.note = f"{rec.note}; {body.note}" if rec.note else body.note
     db.commit()
     db.refresh(person)
     return person
+
+
+@app.post("/api/people/{person_id}/payments/complete", response_model=schemas.PersonOut, dependencies=[Depends(auth.require_auth)])
+def complete_payment(person_id: int, body: schemas.CompletePaymentRequest, db: Session = Depends(get_db)):
+    """Manually mark a month as fully paid, regardless of what's been logged
+    so far — for when you've settled up in person and just want it to show
+    Completed without walking through the amount math."""
+    person = db.query(models.Person).get(person_id)
+    if not person:
+        raise HTTPException(404, "Person not found")
+
+    rec = db.query(models.PersonPayment).filter_by(person_id=person_id, month=body.month).first()
+    if not rec:
+        year, mo = (int(x) for x in body.month.split("-"))
+        rec = models.PersonPayment(
+            person_id=person_id, month=body.month,
+            due_date=due_date_for(year, mo, person.due_day), paid_amount=0,
+        )
+        db.add(rec)
+
+    rec.paid_amount = person.monthly_due
+    rec.paid_date = body.paid_date or date.today()
+    if body.note:
+        rec.note = f"{rec.note}; {body.note}" if rec.note else body.note
+    db.commit()
+    db.refresh(person)
+    return person
+
+
+@app.get("/api/people/{person_id}/export", dependencies=[Depends(auth.require_auth)])
+def export_person_history(person_id: int, db: Session = Depends(get_db)):
+    person = db.query(models.Person).get(person_id)
+    if not person:
+        raise HTTPException(404, "Person not found")
+
+    from io import BytesIO
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Payment history"
+
+    header_font = Font(name="Arial", bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="1B2140", end_color="1B2140", fill_type="solid")
+    normal_font = Font(name="Arial")
+    currency_fmt = '₹#,##0.00'
+
+    # summary block
+    ws["A1"] = "Name"
+    ws["B1"] = person.name
+    ws["A2"] = "Amount given"
+    ws["B2"] = person.amount_given
+    ws["B2"].number_format = currency_fmt
+    ws["A3"] = "Monthly due"
+    ws["B3"] = person.monthly_due
+    ws["B3"].number_format = currency_fmt
+    ws["A4"] = "Due day of month"
+    ws["B4"] = person.due_day
+    for cell in ["A1", "A2", "A3", "A4"]:
+        ws[cell].font = Font(name="Arial", bold=True)
+    for cell in ["B1", "B2", "B3", "B4"]:
+        ws[cell].font = normal_font
+
+    headers = ["Month", "Due date", "Paid amount", "Paid date", "Status", "Note"]
+    header_row = 6
+    for col, h in enumerate(headers, start=1):
+        c = ws.cell(row=header_row, column=col, value=h)
+        c.font = header_font
+        c.fill = header_fill
+        c.alignment = Alignment(horizontal="center")
+
+    today = date.today()
+    rows = sorted(person.payments, key=lambda h: h.month, reverse=True)
+    for i, h in enumerate(rows, start=header_row + 1):
+        status = payment_status(h.paid_amount, person.monthly_due, h.due_date, today)
+        status_label = {"paid": "Completed", "partial": "Partial", "overdue": "Overdue",
+                         "due_soon": "Due soon", "pending": "Pending"}.get(status, status)
+        ws.cell(row=i, column=1, value=h.month).font = normal_font
+        c = ws.cell(row=i, column=2, value=h.due_date)
+        c.number_format = "DD/MM/YYYY"
+        c.font = normal_font
+        c = ws.cell(row=i, column=3, value=h.paid_amount)
+        c.number_format = currency_fmt
+        c.font = normal_font
+        c = ws.cell(row=i, column=4, value=h.paid_date)
+        if h.paid_date:
+            c.number_format = "DD/MM/YYYY"
+        c.font = normal_font
+        ws.cell(row=i, column=5, value=status_label).font = normal_font
+        ws.cell(row=i, column=6, value=h.note or "").font = normal_font
+
+    widths = [12, 14, 14, 14, 12, 30]
+    for col, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(col)].width = w
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    safe_name = "".join(c for c in person.name if c.isalnum() or c in " _-").strip() or "person"
+    headers = {"Content-Disposition": f'attachment; filename="{safe_name}-history.xlsx"'}
+    return Response(
+        content=buf.read(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +360,77 @@ def delete_expense(expense_id: int, db: Session = Depends(get_db)):
 
 
 # ---------------------------------------------------------------------------
+# expense categories
+# ---------------------------------------------------------------------------
+DEFAULT_CATEGORIES = ["Rent", "Groceries", "Travel", "Utilities", "Family Support", "Eating Out", "Other"]
+
+
+def ensure_default_categories(db: Session):
+    if db.query(models.ExpenseCategory).count() == 0:
+        for name in DEFAULT_CATEGORIES:
+            db.add(models.ExpenseCategory(name=name))
+        db.commit()
+
+
+@app.get("/api/expense-categories", response_model=list[schemas.ExpenseCategoryOut], dependencies=[Depends(auth.require_auth)])
+def list_expense_categories(db: Session = Depends(get_db)):
+    ensure_default_categories(db)
+    return db.query(models.ExpenseCategory).order_by(models.ExpenseCategory.name).all()
+
+
+@app.post("/api/expense-categories", response_model=schemas.ExpenseCategoryOut, dependencies=[Depends(auth.require_auth)])
+def create_expense_category(body: schemas.ExpenseCategoryCreate, db: Session = Depends(get_db)):
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "Category name can't be empty")
+    existing = db.query(models.ExpenseCategory).filter(func.lower(models.ExpenseCategory.name) == name.lower()).first()
+    if existing:
+        return existing
+    cat = models.ExpenseCategory(name=name)
+    db.add(cat)
+    db.commit()
+    db.refresh(cat)
+    return cat
+
+
+@app.delete("/api/expense-categories/{category_id}", dependencies=[Depends(auth.require_auth)])
+def delete_expense_category(category_id: int, db: Session = Depends(get_db)):
+    cat = db.query(models.ExpenseCategory).get(category_id)
+    if not cat:
+        raise HTTPException(404, "Category not found")
+    db.delete(cat)
+    db.commit()
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# savings log
+# ---------------------------------------------------------------------------
+@app.get("/api/savings-log", response_model=list[schemas.SavingsEntryOut], dependencies=[Depends(auth.require_auth)])
+def list_savings_log(db: Session = Depends(get_db)):
+    return db.query(models.SavingsEntry).order_by(models.SavingsEntry.date.desc()).all()
+
+
+@app.post("/api/savings-log", response_model=schemas.SavingsEntryOut, dependencies=[Depends(auth.require_auth)])
+def create_savings_entry(body: schemas.SavingsEntryCreate, db: Session = Depends(get_db)):
+    entry = models.SavingsEntry(**body.model_dump())
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    return entry
+
+
+@app.delete("/api/savings-log/{entry_id}", dependencies=[Depends(auth.require_auth)])
+def delete_savings_entry(entry_id: int, db: Session = Depends(get_db)):
+    entry = db.query(models.SavingsEntry).get(entry_id)
+    if not entry:
+        raise HTTPException(404, "Entry not found")
+    db.delete(entry)
+    db.commit()
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
 # settings
 # ---------------------------------------------------------------------------
 @app.get("/api/settings", response_model=schemas.SettingsOut, dependencies=[Depends(auth.require_auth)])
@@ -259,6 +447,123 @@ def update_settings(body: schemas.SettingsUpdate, db: Session = Depends(get_db))
     db.commit()
     db.refresh(s)
     return s
+
+
+# ---------------------------------------------------------------------------
+# push notifications
+# ---------------------------------------------------------------------------
+@app.get("/api/push/public-key")
+def push_public_key():
+    """No auth required — the browser needs this before you're necessarily
+    logged in yet, and it's not sensitive (it's meant to be public)."""
+    return {"publicKey": push.get_or_create_vapid_keys()["public_key"]}
+
+
+@app.post("/api/push/subscribe", dependencies=[Depends(auth.require_auth)])
+def push_subscribe(body: schemas.PushSubscribeRequest, db: Session = Depends(get_db)):
+    existing = db.query(models.PushSubscription).filter_by(endpoint=body.endpoint).first()
+    if existing:
+        existing.p256dh = body.keys.p256dh
+        existing.auth = body.keys.auth
+    else:
+        db.add(models.PushSubscription(
+            endpoint=body.endpoint, p256dh=body.keys.p256dh, auth=body.keys.auth,
+        ))
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/push/unsubscribe", dependencies=[Depends(auth.require_auth)])
+def push_unsubscribe(body: schemas.PushUnsubscribeRequest, db: Session = Depends(get_db)):
+    db.query(models.PushSubscription).filter_by(endpoint=body.endpoint).delete()
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/push/test", dependencies=[Depends(auth.require_auth)])
+def push_test(db: Session = Depends(get_db)):
+    subs = db.query(models.PushSubscription).all()
+    if not subs:
+        raise HTTPException(400, "No devices are subscribed yet. Tap 'Enable notifications' first.")
+    sent = 0
+    for s in subs:
+        ok = push.send_notification(
+            {"endpoint": s.endpoint, "keys": {"p256dh": s.p256dh, "auth": s.auth}},
+            "Ledger test notification",
+            "If you can see this, notifications are working.",
+        )
+        if ok:
+            sent += 1
+        else:
+            # subscription is likely dead (expired/revoked) — remove it
+            db.delete(s)
+    db.commit()
+    return {"sent": sent, "total": len(subs)}
+
+
+def run_due_date_check():
+    """Runs once a day (see scheduler setup below). Sends one digest
+    notification per subscribed device listing anyone overdue or due
+    within 2 days. Safe to call manually too — it's idempotent per call,
+    though it will re-notify for the same unpaid month on each run since
+    there's no separate 'already notified' tracking — intentionally simple."""
+    db = SessionLocal()
+    try:
+        today = date.today()
+        cm = month_str(today)
+        ensure_current_month_entries(db, today)
+        people = db.query(models.Person).filter(models.Person.archived == False).all()  # noqa: E712
+
+        overdue_names, due_soon_names = [], []
+        for p in people:
+            rec = next((pay for pay in p.payments if pay.month == cm), None)
+            if not rec:
+                continue
+            status = payment_status(rec.paid_amount, p.monthly_due, rec.due_date, today)
+            if status == "overdue":
+                overdue_names.append(p.name)
+            elif status == "due_soon":
+                due_soon_names.append(p.name)
+
+        if not overdue_names and not due_soon_names:
+            return
+
+        parts = []
+        if overdue_names:
+            parts.append(f"Overdue: {', '.join(overdue_names)}")
+        if due_soon_names:
+            parts.append(f"Due soon: {', '.join(due_soon_names)}")
+        body = " · ".join(parts)
+
+        subs = db.query(models.PushSubscription).all()
+        for s in subs:
+            ok = push.send_notification(
+                {"endpoint": s.endpoint, "keys": {"p256dh": s.p256dh, "auth": s.auth}},
+                "Payments need attention", body,
+            )
+            if not ok:
+                db.delete(s)
+        db.commit()
+    except Exception:
+        logger.exception("Daily due-date check failed")
+    finally:
+        db.close()
+
+
+_scheduler = BackgroundScheduler()
+
+
+@app.on_event("startup")
+def start_scheduler():
+    notify_hour = int(os.getenv("LEDGER_NOTIFY_HOUR", "9"))
+    _scheduler.add_job(run_due_date_check, "cron", hour=notify_hour, minute=0, id="due_date_check")
+    _scheduler.start()
+    logger.info("Scheduled daily due-date check at %02d:00 local time", notify_hour)
+
+
+@app.on_event("shutdown")
+def stop_scheduler():
+    _scheduler.shutdown(wait=False)
 
 
 # ---------------------------------------------------------------------------

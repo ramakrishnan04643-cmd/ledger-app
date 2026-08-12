@@ -44,7 +44,77 @@ const STATUS_META = {
   overdue: { label: "Overdue", color: "var(--red)" },
 };
 
-const EXPENSE_CATS = ["Rent", "Groceries", "Travel", "Utilities", "Family Support", "Eating Out", "Other"];
+// ---------------------------------------------------------------------------
+// push notifications (real phone push — works even when the app is closed,
+// via the service worker + your browser's push service). Requires HTTPS
+// or localhost; over plain HTTP (e.g. a bare Tailscale IP) this silently
+// reports unsupported, which the UI explains.
+// ---------------------------------------------------------------------------
+function pushSupported() {
+  return "serviceWorker" in navigator && "PushManager" in window && window.isSecureContext;
+}
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = atob(base64);
+  const output = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; i++) output[i] = rawData.charCodeAt(i);
+  return output;
+}
+
+async function checkPushStatus() {
+  if (!pushSupported()) { state.pushSubscribed = false; return; }
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    state.pushSubscribed = !!sub;
+  } catch {
+    state.pushSubscribed = false;
+  }
+}
+
+async function enablePushNotifications() {
+  if (!pushSupported()) return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const { publicKey } = await api.get("/api/push/public-key");
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(publicKey),
+    });
+    await api.post("/api/push/subscribe", sub.toJSON());
+    state.pushSubscribed = true;
+    render();
+  } catch (e) {
+    alert("Couldn't enable notifications: " + e.message);
+  }
+}
+
+async function disablePushNotifications() {
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) {
+      await api.post("/api/push/unsubscribe", { endpoint: sub.endpoint });
+      await sub.unsubscribe();
+    }
+  } finally {
+    state.pushSubscribed = false;
+    render();
+  }
+}
+
+async function sendTestPush() {
+  try {
+    const res = await api.post("/api/push/test");
+    alert(`Sent to ${res.sent} of ${res.total} device(s). Check your phone.`);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+const DEFAULT_EXPENSE_CATS = ["Rent", "Groceries", "Travel", "Utilities", "Family Support", "Eating Out", "Other"];
 
 // ---------------------------------------------------------------------------
 // state
@@ -57,10 +127,15 @@ const state = {
   selectedPersonId: null,
   showArchived: false,
   expenses: [],
+  categories: [],
+  savingsLog: [],
   dashboard: null,
   summary: null,
-  modal: null,          // 'addPerson' | 'addExpense' | 'recordPayment'
+  modal: null,          // 'addPerson' | 'addExpense' | 'recordPayment' | 'addSavingsEntry' | 'manageCategories'
   payModalCtx: null,    // { personId, month, remaining }
+  editingGoal: false,
+  showCategoryManager: false,
+  pushSubscribed: false,
   error: null,
 };
 
@@ -94,16 +169,21 @@ async function init() {
 }
 
 async function loadAll() {
-  const [dashboard, people, expenses, summary] = await Promise.all([
+  const [dashboard, people, expenses, summary, categories, savingsLog] = await Promise.all([
     api.get("/api/dashboard"),
     api.get(`/api/people?include_archived=${state.showArchived}`),
     api.get("/api/expenses"),
     api.get("/api/summary"),
+    api.get("/api/expense-categories"),
+    api.get("/api/savings-log"),
   ]);
   state.dashboard = dashboard;
   state.people = people;
   state.expenses = expenses;
   state.summary = summary;
+  state.categories = categories;
+  state.savingsLog = savingsLog;
+  await checkPushStatus();
 }
 
 async function refresh() {
@@ -242,6 +322,21 @@ function renderOverview() {
   if (!d) return "";
   const notifs = d.notifications;
   const hasNotifs = notifs.overdue.length || notifs.due_soon.length || notifs.pending.length;
+  const notifPermHtml = !pushSupported() ? `
+    <div class="card" style="margin-bottom:14px">
+      <div style="font-size:12px;color:var(--muted)">Phone notifications need a secure connection (HTTPS) to work. If you're on Tailscale, run <span class="mono" style="color:var(--muted-2)">tailscale serve https / http://localhost:8420</span> on your PC and open that address instead.</div>
+    </div>` : state.pushSubscribed ? `
+    <div class="card" style="margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+      <div style="font-size:12px;color:var(--green)">🔔 Phone notifications are on — you'll get a daily alert for anyone overdue or due soon.</div>
+      <div style="display:flex;gap:8px">
+        <button class="btn-outline" onclick="sendTestPush()">Send test</button>
+        <button class="btn-outline" onclick="disablePushNotifications()">Turn off</button>
+      </div>
+    </div>` : `
+    <div class="card" style="margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+      <div style="font-size:12px;color:var(--muted)">Get a real phone notification when someone's payment is overdue or due soon — works even with the app closed.</div>
+      <button class="btn-outline" style="white-space:nowrap" onclick="enablePushNotifications()">🔔 Enable</button>
+    </div>`;
 
   const notifHtml = hasNotifs ? `
     <div class="card" style="margin-bottom:14px;${notifs.overdue.length ? "border-color:var(--red)" : ""}">
@@ -254,6 +349,7 @@ function renderOverview() {
     </div>` : "";
 
   return `
+    ${notifPermHtml}
     ${notifHtml}
     <div class="grid-3" style="margin-bottom:14px">
       <div class="card"><div class="label-sm">COLLECTED THIS MONTH</div><div class="big-num mono" style="color:var(--green)">${fmtINR(d.month_collected)}</div></div>
@@ -301,18 +397,42 @@ function renderOverview() {
       <div style="font-size:11px;color:var(--muted-2);margin-top:6px">${d.savings_goal.pct}% of the way there</div>
     </div>
 
+    <div class="card" style="margin-bottom:14px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <div class="label-sm" style="margin:0">SAVINGS LOG</div>
+        <button class="btn-outline" onclick="openModal('addSavingsEntry')">+ Add entry</button>
+      </div>
+      ${state.savingsLog.slice(0, 5).map(s => `
+        <div class="row" style="cursor:default">
+          <div>
+            <div class="mono" style="font-size:13px;color:var(--green)">${fmtINR(s.amount)}</div>
+            <div style="font-size:11px;color:var(--muted-2)">${fmtDate(s.date)}${s.note ? " · " + s.note : ""}</div>
+          </div>
+          <button style="color:var(--muted-2);font-size:11px" onclick="deleteSavingsEntry(${s.id})">✕</button>
+        </div>`).join("") || `<div style="color:var(--muted-2);font-size:12px;padding:6px 0">No entries yet — log what you saved each month, with a note if you like.</div>`}
+    </div>
+
     <div class="card">
-      <div class="label-sm">THIS MONTH'S STATUS AT A GLANCE</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <div class="label-sm" style="margin:0">THIS MONTH'S STATUS AT A GLANCE</div>
+        <button class="btn-outline" onclick="openModal('addPerson')">+ Add person</button>
+      </div>
       ${d.people_status.map(p => {
         const meta = STATUS_META[p.status] || { label: p.status, color: "var(--muted)" };
         const right = p.status === "partial" ? `${fmtINR(p.paid_amount)} / ${fmtINR(p.monthly_due)}` : meta.label;
-        return `<div class="row" onclick="openPerson(${p.person_id})">
-          <span>${p.name}</span>
-          <span class="mono" style="font-size:12px;color:${meta.color}">${right}</span>
+        return `<div class="row">
+          <span onclick="openPerson(${p.person_id})" style="flex:1;cursor:pointer">${p.name}</span>
+          <span class="mono" style="font-size:12px;color:${meta.color};margin-right:10px" onclick="openPerson(${p.person_id})">${right}</span>
+          <button title="Remove from active list" style="color:var(--muted-2);font-size:11px" onclick="event.stopPropagation();quickArchive(${p.person_id})">🗄</button>
         </div>`;
       }).join("") || `<div style="color:var(--muted-2);font-size:13px;padding:10px 0">No one added yet.</div>`}
     </div>
   `;
+}
+
+async function quickArchive(personId) {
+  await api.post(`/api/people/${personId}/archive`);
+  await refresh();
 }
 
 function toggleGoalEdit() { state.editingGoal = !state.editingGoal; render(); }
@@ -405,9 +525,13 @@ function renderPersonDetail() {
         <h2 class="display" style="font-size:20px;margin:0 0 4px">${p.name}</h2>
         <div style="font-size:12px;color:var(--muted)">${fmtINR(p.monthly_due)}/month · due on the ${p.due_day}</div>
       </div>
-      <button class="btn-outline" style="border-color:${p.archived ? "var(--border)" : (fullySettled ? "var(--green)" : "var(--border)")};color:${p.archived ? "var(--muted)" : (fullySettled ? "var(--green)" : "var(--muted-2)")}" onclick="toggleArchive(${p.id})">
-        ${p.archived ? "↩ Restore" : "🗄 Archive"}
-      </button>
+      <div style="display:flex;gap:8px">
+        <a href="/api/people/${p.id}/export" class="btn-outline" style="text-decoration:none">⬇ Excel</a>
+        <button class="btn-outline" style="border-color:${p.archived ? "var(--border)" : (fullySettled ? "var(--green)" : "var(--border)")};color:${p.archived ? "var(--muted)" : (fullySettled ? "var(--green)" : "var(--muted-2)")}" onclick="toggleArchive(${p.id})">
+          ${p.archived ? "↩ Restore" : "🗄 Archive"}
+        </button>
+        <button class="btn-outline" style="border-color:var(--red);color:var(--red)" onclick="confirmDeletePerson(${p.id}, '${p.name.replace(/'/g, "\\'")}')">🗑</button>
+      </div>
     </div>
     ${!p.archived && fullySettled ? `<div style="font-size:12px;color:var(--green);margin-bottom:12px">✓ Fully repaid — you can archive this person</div>` : ""}
     <div class="grid-3" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">
@@ -422,22 +546,45 @@ function renderPersonDetail() {
           (new Date(h.due_date) < new Date() ? "overdue" : "pending");
         const meta = STATUS_META[status] || { label: status, color: "var(--muted)" };
         return `
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:9px 4px;border-bottom:1px solid var(--row-hover)">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;padding:9px 4px;border-bottom:1px solid var(--row-hover)">
           <div>
             <div style="font-size:13px">${monthLabel(h.month)}</div>
             <div style="font-size:11px;color:var(--muted-2)">Due ${fmtDate(h.due_date)}</div>
+            ${h.paid_date ? `<div style="font-size:11px;color:var(--muted-2)">Paid on ${fmtDate(h.paid_date)}</div>` : ""}
+            ${h.note ? `<div style="font-size:11px;color:var(--muted-2);font-style:italic;max-width:180px">"${h.note}"</div>` : ""}
           </div>
-          <div style="display:flex;align-items:center;gap:10px">
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
             <div style="text-align:right">
               <div style="font-size:12px;font-weight:600;color:${meta.color}">${meta.label}</div>
               ${h.paid_amount > 0 ? `<div class="mono" style="font-size:10px;color:var(--muted-2)">${fmtINR(h.paid_amount)} of ${fmtINR(p.monthly_due)}</div>` : ""}
             </div>
-            ${h.paid_amount < p.monthly_due && !p.archived ? `<button class="btn-green-outline" onclick="openPayModal(${p.id}, '${h.month}', ${p.monthly_due - h.paid_amount})">Record payment</button>` : ""}
+            ${h.paid_amount < p.monthly_due && !p.archived ? `
+              <div style="display:flex;gap:6px">
+                <button class="btn-green-outline" onclick="openPayModal(${p.id}, '${h.month}', ${p.monthly_due - h.paid_amount})">Record payment</button>
+                <button class="btn-green-outline" style="border-color:var(--gold);color:var(--gold)" onclick="markComplete(${p.id}, '${h.month}')">Mark completed</button>
+              </div>` : ""}
           </div>
         </div>`;
       }).join("")}
     </div>
   `;
+}
+
+function confirmDeletePerson(id, name) {
+  if (confirm(`Delete ${name} permanently? This removes their entire payment history and can't be undone.`)) {
+    deletePerson(id);
+  }
+}
+
+async function deletePerson(id) {
+  await api.delete(`/api/people/${id}`);
+  state.selectedPersonId = null;
+  await refresh();
+}
+
+async function markComplete(personId, month) {
+  await api.post(`/api/people/${personId}/payments/complete`, { month });
+  await refresh();
 }
 
 function backToPeople() { state.selectedPersonId = null; render(); }
@@ -456,8 +603,28 @@ function renderExpenses() {
   return `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
       <div class="card"><div class="label-sm">THIS MONTH'S SPEND</div><div class="big-num mono">${fmtINR(monthTotal)}</div></div>
-      <button class="btn-primary" onclick="openModal('addExpense')">+ Add expense</button>
+      <div style="display:flex;gap:8px">
+        <button class="btn-outline" onclick="toggleCategoryManager()">🏷 Categories</button>
+        <button class="btn-primary" onclick="openModal('addExpense')">+ Add expense</button>
+      </div>
     </div>
+    ${state.showCategoryManager ? `
+      <div class="card" style="margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div class="label-sm" style="margin:0">EXPENSE CATEGORIES</div>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+          ${state.categories.map(c => `
+            <span style="display:flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--border);border-radius:14px;padding:5px 10px;font-size:12px">
+              ${c.name}
+              <button style="color:var(--muted-2);font-size:10px" onclick="deleteCategory(${c.id})">✕</button>
+            </span>`).join("")}
+        </div>
+        <div style="display:flex;gap:6px">
+          <input id="cat-new-name" placeholder="New category name" style="flex:1">
+          <button class="btn-outline" onclick="addCategoryFromManager()">Add</button>
+        </div>
+      </div>` : ""}
     <div class="card">
       ${state.expenses.map(e => `
         <div class="row" style="cursor:default">
@@ -472,6 +639,21 @@ function renderExpenses() {
         </div>`).join("") || `<div style="color:var(--muted-2);font-size:13px;text-align:center;padding:20px">No expenses logged yet.</div>`}
     </div>
   `;
+}
+
+function toggleCategoryManager() { state.showCategoryManager = !state.showCategoryManager; render(); }
+
+async function addCategoryFromManager() {
+  const input = document.getElementById("cat-new-name");
+  const name = input.value.trim();
+  if (!name) return;
+  await api.post("/api/expense-categories", { name });
+  await refresh();
+}
+
+async function deleteCategory(id) {
+  await api.delete(`/api/expense-categories/${id}`);
+  await refresh();
 }
 
 async function deleteExpense(id) {
@@ -554,11 +736,22 @@ function renderModal() {
       </div>`;
   } else if (state.modal === "addExpense") {
     const today = new Date().toISOString().slice(0, 10);
+    const cats = state.categories.length ? state.categories.map(c => c.name) : DEFAULT_EXPENSE_CATS;
     overlay.innerHTML = `
       <div class="modal">
         <div class="modal-header"><div class="display" style="font-size:16px;font-weight:600">Add expense</div><button onclick="closeModal()">✕</button></div>
         <div class="field"><label>DATE</label><input id="e-date" type="date" value="${today}"></div>
-        <div class="field"><label>CATEGORY</label><select id="e-cat">${EXPENSE_CATS.map(c => `<option value="${c}">${c}</option>`).join("")}</select></div>
+        <div class="field">
+          <label>CATEGORY</label>
+          <div style="display:flex;gap:6px">
+            <select id="e-cat" style="flex:1">${cats.map(c => `<option value="${c}">${c}</option>`).join("")}</select>
+            <button type="button" class="btn-outline" style="white-space:nowrap" onclick="toggleNewCatInput()">+ New</button>
+          </div>
+          <div id="e-newcat-wrap" style="display:none;margin-top:8px;gap:6px" >
+            <input id="e-newcat" placeholder="e.g. Medical" style="margin-bottom:6px">
+            <button type="button" class="btn-outline" onclick="addNewCategoryInline()">Add category</button>
+          </div>
+        </div>
         <div class="field"><label>AMOUNT (₹)</label><input id="e-amount" type="number" placeholder="0"></div>
         <div class="field"><label>NOTE</label><input id="e-note" placeholder="what was this for?"></div>
         <div id="e-error" style="color:var(--red);font-size:12px;margin-bottom:8px;min-height:14px"></div>
@@ -566,14 +759,28 @@ function renderModal() {
       </div>`;
   } else if (state.modal === "recordPayment") {
     const ctx = state.payModalCtx;
+    const today = new Date().toISOString().slice(0, 10);
     overlay.innerHTML = `
       <div class="modal">
         <div class="modal-header"><div class="display" style="font-size:16px;font-weight:600">Record payment</div><button onclick="closeModal()">✕</button></div>
         <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Remaining due: ${fmtINR(ctx.remaining)}</div>
         <div class="field"><label>AMOUNT RECEIVED (₹)</label><input id="pay-amount" type="number" value="${ctx.remaining}"></div>
+        <div class="field"><label>DATE ENTERED</label><input id="pay-date" type="date" value="${today}"></div>
+        <div class="field"><label>NOTE (optional)</label><input id="pay-note" placeholder="e.g. cash handover, UPI"></div>
         <div style="font-size:11px;color:var(--muted-2);margin-bottom:16px">Enter less than the full amount to record a partial payment — the rest stays outstanding.</div>
         <div id="pay-error" style="color:var(--red);font-size:12px;margin-bottom:8px;min-height:14px"></div>
         <button class="btn-primary" style="width:100%;justify-content:center;background:var(--green)" onclick="submitPayment()">Save payment</button>
+      </div>`;
+  } else if (state.modal === "addSavingsEntry") {
+    const today = new Date().toISOString().slice(0, 10);
+    overlay.innerHTML = `
+      <div class="modal">
+        <div class="modal-header"><div class="display" style="font-size:16px;font-weight:600">Add savings entry</div><button onclick="closeModal()">✕</button></div>
+        <div class="field"><label>DATE</label><input id="sv-date" type="date" value="${today}"></div>
+        <div class="field"><label>AMOUNT (₹)</label><input id="sv-amount" type="number" placeholder="0"></div>
+        <div class="field"><label>NOTE</label><input id="sv-note" placeholder="e.g. leftover after expenses"></div>
+        <div id="sv-error" style="color:var(--red);font-size:12px;margin-bottom:8px;min-height:14px"></div>
+        <button class="btn-primary" style="width:100%;justify-content:center" onclick="submitSavingsEntry()">Save entry</button>
       </div>`;
   }
   document.body.appendChild(overlay);
@@ -621,14 +828,60 @@ async function submitPayment() {
     document.getElementById("pay-error").textContent = "Enter a valid amount.";
     return;
   }
+  const paid_date = document.getElementById("pay-date").value || undefined;
+  const note = document.getElementById("pay-note").value.trim();
   const ctx = state.payModalCtx;
   try {
-    await api.post(`/api/people/${ctx.personId}/payments`, { month: ctx.month, amount });
+    await api.post(`/api/people/${ctx.personId}/payments`, { month: ctx.month, amount, note, paid_date });
     closeModal();
     await refresh();
   } catch (e) {
     document.getElementById("pay-error").textContent = e.message;
   }
+}
+
+function toggleNewCatInput() {
+  const wrap = document.getElementById("e-newcat-wrap");
+  wrap.style.display = wrap.style.display === "none" ? "flex" : "none";
+  wrap.style.flexDirection = "column";
+}
+
+async function addNewCategoryInline() {
+  const name = document.getElementById("e-newcat").value.trim();
+  if (!name) return;
+  try {
+    const cat = await api.post("/api/expense-categories", { name });
+    state.categories.push(cat);
+    state.categories.sort((a, b) => a.name.localeCompare(b.name));
+    renderModal(); // re-render modal with the new category available
+    const select = document.getElementById("e-cat");
+    if (select) select.value = cat.name;
+    document.getElementById("e-newcat-wrap").style.display = "none";
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function submitSavingsEntry() {
+  const date = document.getElementById("sv-date").value;
+  const amount = Number(document.getElementById("sv-amount").value);
+  const note = document.getElementById("sv-note").value.trim();
+  if (!date || !amount) {
+    document.getElementById("sv-error").textContent = "Date and amount are required.";
+    return;
+  }
+  try {
+    await api.post("/api/savings-log", { date, amount, note });
+    closeModal();
+    await refresh();
+  } catch (e) {
+    document.getElementById("sv-error").textContent = e.message;
+  }
+}
+
+async function deleteSavingsEntry(id) {
+  await api.delete(`/api/savings-log/${id}`);
+  await refresh();
 }
 
 // ---------------------------------------------------------------------------

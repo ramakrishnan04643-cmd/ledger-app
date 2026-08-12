@@ -50,3 +50,41 @@ self.addEventListener("fetch", (event) => {
       .catch(() => caches.match(event.request))
   );
 });
+
+// ---------------------------------------------------------------------------
+// push notifications — the backend sends {title, body} as JSON payload
+// (see push.py::send_notification). This fires even if the app tab is
+// closed, as long as the browser/OS allows background service workers.
+// ---------------------------------------------------------------------------
+self.addEventListener("push", (event) => {
+  let title = "Ledger";
+  let body = "You have a payment update.";
+  try {
+    const data = event.data.json();
+    title = data.title || title;
+    body = data.body || body;
+  } catch {
+    if (event.data) body = event.data.text();
+  }
+
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body,
+      icon: "/static/icons/icon-192.png",
+      badge: "/static/icons/icon-192.png",
+      tag: "ledger-due-date",  // replaces any previous unread one instead of stacking
+    })
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+      for (const client of clients) {
+        if ("focus" in client) return client.focus();
+      }
+      if (self.clients.openWindow) return self.clients.openWindow("/");
+    })
+  );
+});
