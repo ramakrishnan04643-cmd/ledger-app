@@ -64,7 +64,13 @@ function urlBase64ToUint8Array(base64String) {
 async function checkPushStatus() {
   if (!pushSupported()) { state.pushSubscribed = false; return; }
   try {
-    const reg = await navigator.serviceWorker.ready;
+    // navigator.serviceWorker.ready has no built-in timeout and can hang
+    // indefinitely if registration is slow/stuck — race it against a
+    // timer so this never blocks the rest of the app from loading.
+    const reg = await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("sw timeout")), 3000)),
+    ]);
     const sub = await reg.pushManager.getSubscription();
     state.pushSubscribed = !!sub;
   } catch {
@@ -167,7 +173,11 @@ async function loadAll() {
   state.summary = summary;
   state.categories = categories;
   state.savingsLog = savingsLog;
-  await checkPushStatus();
+  // Deliberately not awaited — push status is a nice-to-have for the
+  // Overview tab and must never delay the rest of the app from showing.
+  checkPushStatus().then(() => {
+    if (state.tab === "overview") render();
+  });
 }
 
 async function refresh() {
