@@ -16,6 +16,7 @@ class SetPasswordRequest(BaseModel):
 class PersonCreate(BaseModel):
     name: str
     amount_given: float = 0
+    date_given: Optional[date] = None
     monthly_due: float
     due_day: int
 
@@ -35,6 +36,7 @@ class PersonOut(BaseModel):
     id: int
     name: str
     amount_given: float
+    date_given: Optional[date] = None
     monthly_due: float
     due_day: int
     archived: bool

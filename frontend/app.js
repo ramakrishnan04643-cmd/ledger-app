@@ -203,6 +203,7 @@ function render() {
       ${tabBtn("overview", "Overview")}
       ${tabBtn("people", "People")}
       ${tabBtn("expenses", "Expenses")}
+      ${tabBtn("savings", "Savings")}
       ${tabBtn("summary", "Summary")}
     </div>
     <div id="tab-content"></div>
@@ -212,6 +213,7 @@ function render() {
     if (state.tab === "overview") content.innerHTML = renderOverview();
     else if (state.tab === "people") content.innerHTML = state.selectedPersonId ? renderPersonDetail() : renderPeopleList();
     else if (state.tab === "expenses") content.innerHTML = renderExpenses();
+    else if (state.tab === "savings") content.innerHTML = renderSavings();
     else if (state.tab === "summary") content.innerHTML = renderSummary();
   } catch (e) {
     console.error("Render error:", e);
@@ -266,7 +268,7 @@ function renderOverview() {
         🔔 Notifications
       </div>
       ${notifs.overdue.map(n => `<div class="notif-line"><span class="dot" style="color:var(--red)">●</span>${n.name} hasn't paid ${fmtINR(n.monthly_due)} — was due on the ${n.due_day}</div>`).join("")}
-      ${notifs.due_soon.map(n => `<div class="notif-line" style="color:#F0D9A0"><span class="dot" style="color:var(--gold)">●</span>${n.name}'s ${fmtINR(n.monthly_due)} is due on the ${n.due_day} — coming up soon</div>`).join("")}
+      ${notifs.due_soon.map(n => `<div class="notif-line" style="color:var(--gold)"><span class="dot" style="color:var(--gold)">●</span>${n.name}'s ${fmtINR(n.monthly_due)} is due on the ${n.due_day} — coming up soon</div>`).join("")}
       ${notifs.pending.map(n => `<div class="notif-line" style="color:var(--muted)"><span class="dot" style="color:var(--muted-2)">●</span>${n.name}'s ${fmtINR(n.monthly_due)} is due on the ${n.due_day} this month</div>`).join("")}
     </div>` : "";
 
@@ -279,7 +281,34 @@ function renderOverview() {
       <div class="card"><div class="label-sm">SPENT THIS MONTH</div><div class="big-num mono">${fmtINR(d.month_expenses)}</div></div>
     </div>
 
-    <div class="card" style="margin-bottom:14px">
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <div class="label-sm" style="margin:0">THIS MONTH'S STATUS AT A GLANCE</div>
+        <button class="btn-outline" onclick="openModal('addPerson')">+ Add person</button>
+      </div>
+      ${d.people_status.map(p => {
+        const meta = STATUS_META[p.status] || { label: p.status, color: "var(--muted)" };
+        const right = p.status === "partial" ? `${fmtINR(p.paid_amount)} / ${fmtINR(p.monthly_due)}` : meta.label;
+        return `<div class="row">
+          <span onclick="openPerson(${p.person_id})" style="flex:1;cursor:pointer">${p.name}</span>
+          <span class="mono" style="font-size:12px;color:${meta.color};margin-right:10px" onclick="openPerson(${p.person_id})">${right}</span>
+          <button title="Remove from active list" style="color:var(--muted-2);font-size:11px" onclick="event.stopPropagation();quickArchive(${p.person_id})">🗄</button>
+        </div>`;
+      }).join("") || `<div style="color:var(--muted-2);font-size:13px;padding:10px 0">No one added yet.</div>`}
+    </div>
+  `;
+}
+
+// ---------------------------------------------------------------------------
+// savings — net worth, goal, and the savings log all live here, separate
+// from Overview
+// ---------------------------------------------------------------------------
+function renderSavings() {
+  const d = state.dashboard;
+  if (!d) return "";
+
+  return `
+    <div class="card accent-gold" style="margin-bottom:14px">
       <div class="label-sm">NET WORTH SNAPSHOT</div>
       <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-end">
         <div>
@@ -299,7 +328,7 @@ function renderOverview() {
       </div>
     </div>
 
-    <div class="card" style="margin-bottom:14px">
+    <div class="card accent-teal" style="margin-bottom:14px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
         <div class="label-sm" style="margin:0">SAVINGS GOAL</div>
         <button style="color:var(--muted-2);font-size:11px;text-decoration:underline" onclick="toggleGoalEdit()">${state.editingGoal ? "done" : "edit"}</button>
@@ -319,12 +348,12 @@ function renderOverview() {
       <div style="font-size:11px;color:var(--muted-2);margin-top:6px">${d.savings_goal.pct}% of the way there</div>
     </div>
 
-    <div class="card" style="margin-bottom:14px">
+    <div class="card accent-purple">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
         <div class="label-sm" style="margin:0">SAVINGS LOG</div>
         <button class="btn-outline" onclick="openModal('addSavingsEntry')">+ Add entry</button>
       </div>
-      ${state.savingsLog.slice(0, 5).map(s => `
+      ${state.savingsLog.map(s => `
         <div class="row" style="cursor:default">
           <div>
             <div class="mono" style="font-size:13px;color:var(--green)">${fmtINR(s.amount)}</div>
@@ -332,22 +361,6 @@ function renderOverview() {
           </div>
           <button style="color:var(--muted-2);font-size:11px" onclick="deleteSavingsEntry(${s.id})">✕</button>
         </div>`).join("") || `<div style="color:var(--muted-2);font-size:12px;padding:6px 0">No entries yet — log what you saved each month, with a note if you like.</div>`}
-    </div>
-
-    <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-        <div class="label-sm" style="margin:0">THIS MONTH'S STATUS AT A GLANCE</div>
-        <button class="btn-outline" onclick="openModal('addPerson')">+ Add person</button>
-      </div>
-      ${d.people_status.map(p => {
-        const meta = STATUS_META[p.status] || { label: p.status, color: "var(--muted)" };
-        const right = p.status === "partial" ? `${fmtINR(p.paid_amount)} / ${fmtINR(p.monthly_due)}` : meta.label;
-        return `<div class="row">
-          <span onclick="openPerson(${p.person_id})" style="flex:1;cursor:pointer">${p.name}</span>
-          <span class="mono" style="font-size:12px;color:${meta.color};margin-right:10px" onclick="openPerson(${p.person_id})">${right}</span>
-          <button title="Remove from active list" style="color:var(--muted-2);font-size:11px" onclick="event.stopPropagation();quickArchive(${p.person_id})">🗄</button>
-        </div>`;
-      }).join("") || `<div style="color:var(--muted-2);font-size:13px;padding:10px 0">No one added yet.</div>`}
     </div>
   `;
 }
@@ -457,7 +470,7 @@ function renderPersonDetail() {
     </div>
     ${!p.archived && fullySettled ? `<div style="font-size:12px;color:var(--green);margin-bottom:12px">✓ Fully repaid — you can archive this person</div>` : ""}
     <div class="grid-3" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">
-      <div class="card"><div style="font-size:10px;color:var(--muted);margin-bottom:6px">AMOUNT GIVEN</div><div class="mono" style="font-size:16px;font-weight:600">${fmtINR(p.amount_given)}</div></div>
+      <div class="card"><div style="font-size:10px;color:var(--muted);margin-bottom:6px">AMOUNT GIVEN</div><div class="mono" style="font-size:16px;font-weight:600">${fmtINR(p.amount_given)}</div>${p.date_given ? `<div style="font-size:10px;color:var(--muted-2);margin-top:3px">on ${fmtDate(p.date_given)}</div>` : ""}</div>
       <div class="card"><div style="font-size:10px;color:var(--muted);margin-bottom:6px">COLLECTED</div><div class="mono" style="font-size:16px;font-weight:600;color:var(--green)">${fmtINR(totals.collected)}</div></div>
       <div class="card"><div style="font-size:10px;color:var(--muted);margin-bottom:6px">OUTSTANDING</div><div class="mono" style="font-size:16px;font-weight:600;color:${totals.outstanding > 0 ? "var(--red)" : "var(--green)"}">${fmtINR(totals.outstanding)}</div></div>
     </div>
@@ -593,7 +606,7 @@ function renderSummary() {
     <div class="card" style="margin-bottom:14px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
         <div class="label-sm" style="margin:0">FY ${new Date(s.fy_start).getFullYear()}–${String(new Date(s.fy_end).getFullYear()).slice(2)} SUMMARY</div>
-        <button class="btn-outline" style="color:var(--gold);border-color:#3A3B6A" onclick="downloadBackup()">⬇ Export all data</button>
+        <button class="btn-outline" style="color:var(--gold);border-color:var(--border)" onclick="downloadBackup()">⬇ Export all data</button>
       </div>
       <div style="font-size:11px;color:var(--muted-2);margin-bottom:14px">${fmtDate(s.fy_start)} – ${fmtDate(s.fy_end)}, based on entries so far</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
@@ -604,7 +617,7 @@ function renderSummary() {
       ${s.by_category.map(c => `
         <div style="margin-bottom:8px">
           <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
-            <span style="color:#B7BCE0">${c.category}</span><span class="mono">${fmtINR(c.amount)}</span>
+            <span style="color:var(--muted)">${c.category}</span><span class="mono">${fmtINR(c.amount)}</span>
           </div>
           <div style="height:5px;background:var(--bg);border-radius:3px;overflow:hidden">
             <div style="height:100%;width:${s.total_expenses ? (c.amount / s.total_expenses) * 100 : 0}%;background:var(--blue);border-radius:3px"></div>
@@ -651,6 +664,7 @@ function renderModal() {
         <div class="modal-header"><div class="display" style="font-size:16px;font-weight:600">Add person</div><button onclick="closeModal()">✕</button></div>
         <div class="field"><label>NAME</label><input id="p-name" placeholder="e.g. Karthik"></div>
         <div class="field"><label>AMOUNT GIVEN (₹)</label><input id="p-given" type="number" placeholder="50000"></div>
+        <div class="field"><label>DATE GIVEN</label><input id="p-date-given" type="date" value="${new Date().toISOString().slice(0, 10)}"></div>
         <div class="field"><label>MONTHLY AMOUNT (₹)</label><input id="p-due" type="number" placeholder="5000"></div>
         <div class="field"><label>DUE DAY OF MONTH (1–31)</label><input id="p-day" type="number" placeholder="5"></div>
         <div id="p-error" style="color:var(--red);font-size:12px;margin-bottom:8px;min-height:14px"></div>
@@ -711,6 +725,7 @@ function renderModal() {
 async function submitAddPerson() {
   const name = document.getElementById("p-name").value.trim();
   const given = Number(document.getElementById("p-given").value || 0);
+  const dateGiven = document.getElementById("p-date-given").value || null;
   const due = Number(document.getElementById("p-due").value);
   const day = Number(document.getElementById("p-day").value);
   if (!name || !due || !day) {
@@ -718,7 +733,7 @@ async function submitAddPerson() {
     return;
   }
   try {
-    await api.post("/api/people", { name, amount_given: given, monthly_due: due, due_day: day });
+    await api.post("/api/people", { name, amount_given: given, date_given: dateGiven, monthly_due: due, due_day: day });
     closeModal();
     await refresh();
   } catch (e) {

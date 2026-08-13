@@ -150,7 +150,7 @@ def create_person(body: schemas.PersonCreate, db: Session = Depends(get_db)):
     if body.due_day < 1 or body.due_day > 31:
         raise HTTPException(400, "due_day must be between 1 and 31")
     person = models.Person(
-        name=body.name, amount_given=body.amount_given,
+        name=body.name, amount_given=body.amount_given, date_given=body.date_given,
         monthly_due=body.monthly_due, due_day=body.due_day,
     )
     db.add(person)
@@ -271,14 +271,18 @@ def export_person_history(person_id: int, db: Session = Depends(get_db)):
     ws["A2"] = "Amount given"
     ws["B2"] = person.amount_given
     ws["B2"].number_format = currency_fmt
-    ws["A3"] = "Monthly due"
-    ws["B3"] = person.monthly_due
-    ws["B3"].number_format = currency_fmt
-    ws["A4"] = "Due day of month"
-    ws["B4"] = person.due_day
-    for cell in ["A1", "A2", "A3", "A4"]:
+    ws["A3"] = "Date given"
+    ws["B3"] = person.date_given
+    ws["A4"] = "Monthly due"
+    ws["B4"] = person.monthly_due
+    ws["B4"].number_format = currency_fmt
+    ws["A5"] = "Due day of month"
+    ws["B5"] = person.due_day
+    for cell in ["A1", "A2", "A3", "A4", "A5"]:
         ws[cell].font = Font(name="Arial", bold=True)
-    for cell in ["B1", "B2", "B3", "B4"]:
+    if person.date_given:
+        ws["B3"].number_format = "DD/MM/YYYY"
+    for cell in ["B1", "B2", "B3", "B4", "B5"]:
         ws[cell].font = normal_font
 
     headers = ["Month", "Due date", "Paid amount", "Paid date", "Status", "Note"]
@@ -698,7 +702,9 @@ def backup(db: Session = Depends(get_db)):
         "exported_at": date.today().isoformat(),
         "people": [
             {
-                "name": p.name, "amount_given": p.amount_given, "monthly_due": p.monthly_due,
+                "name": p.name, "amount_given": p.amount_given,
+                "date_given": p.date_given.isoformat() if p.date_given else None,
+                "monthly_due": p.monthly_due,
                 "due_day": p.due_day, "archived": p.archived,
                 "payments": [
                     {"month": pay.month, "due_date": pay.due_date.isoformat(),

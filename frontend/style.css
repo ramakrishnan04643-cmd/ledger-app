@@ -1,28 +1,40 @@
 :root {
-  --bg: #12172B;
-  --card: #1B2140;
-  --border: #2A3160;
-  --row-hover: #212850;
-  --text: #EDEEF5;
-  --muted: #8890B5;
-  --muted-2: #6870A0;
-  --gold: #D4AF6A;
-  --green: #6FBF9E;
-  --red: #E2665A;
-  --blue: #8FB8D9;
+  /* Deep plum-indigo, not black — warm, has visible hue rather than reading as grayscale */
+  --bg: #211C36;
+  --bg-alt: #2A2246;
+  --card: #2E2750;
+  --card-alt: #382E60;
+  --border: #473B72;
+  --row-hover: #3A3168;
+  --text: #F5F2FB;
+  --muted: #B3A6D9;
+  --muted-2: #8D7EC0;
+
+  /* wider accent palette than before */
+  --gold: #F0B35B;
+  --amber: #F0B35B;
+  --green: #4FD1A5;
+  --red: #F0706E;
+  --blue: #6FB4E8;
+  --purple: #C08CF0;
+  --teal: #45D0C4;
+  --pink: #F286B0;
 }
 
 * { box-sizing: border-box; }
 
 body {
   margin: 0;
-  background: var(--bg);
+  background:
+    radial-gradient(circle at 15% 0%, rgba(192,140,240,0.10), transparent 45%),
+    radial-gradient(circle at 100% 20%, rgba(69,208,196,0.08), transparent 40%),
+    var(--bg);
   color: var(--text);
-  font-family: 'IBM Plex Sans', 'Inter', system-ui, sans-serif;
+  font-family: 'Manrope', system-ui, sans-serif;
 }
 
-.mono { font-family: 'IBM Plex Mono', monospace; }
-.display { font-family: 'Space Grotesk', sans-serif; }
+.mono { font-family: 'JetBrains Mono', monospace; }
+.display { font-family: 'Sora', 'Manrope', sans-serif; }
 
 #app {
   max-width: 780px;
@@ -41,26 +53,29 @@ input, select {
   font-family: inherit;
   width: 100%;
   padding: 9px 10px;
-  background: var(--bg);
+  background: var(--bg-alt);
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--text);
   font-size: 13px;
 }
 input::placeholder { color: var(--muted-2); }
+input:focus, select:focus { outline: none; border-color: var(--purple); }
 
 .card {
-  background: var(--card);
-  border-radius: 10px;
+  background: linear-gradient(160deg, var(--card), var(--card-alt));
+  border-radius: 12px;
   padding: 18px 20px;
   border: 1px solid var(--border);
 }
 
 .btn-primary {
   display: flex; align-items: center; gap: 6px;
-  background: var(--gold); color: var(--bg);
+  background: linear-gradient(135deg, var(--gold), #E8935B);
+  color: #241A0C;
   border-radius: 8px; padding: 10px 16px;
-  font-weight: 600; font-size: 13px;
+  font-weight: 700; font-size: 13px;
+  box-shadow: 0 2px 10px rgba(240,179,91,0.25);
 }
 .btn-outline {
   display: flex; align-items: center; gap: 6px;
@@ -68,9 +83,10 @@ input::placeholder { color: var(--muted-2); }
   border: 1px solid var(--border); border-radius: 8px;
   padding: 9px 12px; font-size: 12px;
 }
+.btn-outline:hover { border-color: var(--purple); color: var(--text); }
 .btn-green-outline {
   border: 1px solid var(--green); color: var(--green);
-  background: transparent; border-radius: 6px;
+  background: rgba(79,209,165,0.08); border-radius: 6px;
   padding: 5px 10px; font-size: 11px;
 }
 
@@ -89,6 +105,10 @@ input::placeholder { color: var(--muted-2); }
   text-transform: uppercase; margin-bottom: 4px;
   display: flex; align-items: center; gap: 6px;
 }
+.header h1 {
+  background: linear-gradient(90deg, var(--text), var(--purple) 140%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
 
 .tabs {
   display: flex; gap: 6px; margin-bottom: 18px;
@@ -97,22 +117,44 @@ input::placeholder { color: var(--muted-2); }
 }
 .tab {
   flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
-  padding: 9px 4px; border-radius: 7px; font-size: 12px; font-weight: 600;
+  padding: 9px 4px; border-radius: 7px; font-size: 12px; font-weight: 700;
   color: var(--muted); transition: all 0.15s;
 }
-.tab.active { background: var(--gold); color: var(--bg); }
+.tab.active {
+  background: linear-gradient(135deg, var(--gold), #E8935B);
+  color: #241A0C;
+}
 
 .grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
-.label-sm { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
-.big-num { font-size: 20px; font-weight: 600; }
+.label-sm { font-size: 11px; color: var(--muted); margin-bottom: 8px; letter-spacing: 0.04em; }
+.big-num { font-size: 20px; font-weight: 700; }
+
+/* pill-style status badges — filled background instead of just colored text */
+.pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 9px; border-radius: 999px;
+  font-size: 11px; font-weight: 700;
+}
+.pill-green { background: rgba(79,209,165,0.16); color: var(--green); }
+.pill-gold  { background: rgba(240,179,91,0.16); color: var(--gold); }
+.pill-red   { background: rgba(240,112,110,0.16); color: var(--red); }
+.pill-blue  { background: rgba(111,180,232,0.16); color: var(--blue); }
+.pill-muted { background: rgba(179,166,217,0.12); color: var(--muted); }
+
+/* accent left-border strip for cards that want extra visual weight */
+.accent-purple { border-left: 3px solid var(--purple); }
+.accent-teal   { border-left: 3px solid var(--teal); }
+.accent-gold   { border-left: 3px solid var(--gold); }
+.accent-red    { border-left: 3px solid var(--red); }
 
 .modal-overlay {
-  position: fixed; inset: 0; background: rgba(6,8,20,0.7);
+  position: fixed; inset: 0; background: rgba(14,10,26,0.72);
   display: flex; align-items: center; justify-content: center;
   z-index: 50; padding: 16px;
 }
 .modal {
-  background: var(--card); border-radius: 12px; padding: 24px;
+  background: linear-gradient(160deg, var(--card), var(--card-alt));
+  border-radius: 14px; padding: 24px;
   width: 100%; max-width: 380px; border: 1px solid var(--border);
 }
 .modal-header {
@@ -130,11 +172,11 @@ input::placeholder { color: var(--muted-2); }
 .login-card { width: 100%; max-width: 340px; text-align: center; }
 
 .progress-bar {
-  height: 8px; background: var(--bg); border-radius: 4px; overflow: hidden;
+  height: 8px; background: var(--bg-alt); border-radius: 4px; overflow: hidden;
 }
 .progress-fill {
   height: 100%; border-radius: 4px;
-  background: linear-gradient(90deg, var(--gold), var(--green));
+  background: linear-gradient(90deg, var(--teal), var(--purple));
 }
 
 .notif-line { font-size: 13px; padding: 4px 0; }
