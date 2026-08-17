@@ -1,14 +1,10 @@
 """
-Password protection — currently DISABLED.
+Minimal single-user password protection.
 
-The app was originally built with password protection (see git history /
-the commented-out logic below if you ever want it back). It's switched off
-here so the app loads straight in with no login screen.
-
-⚠️ If this is deployed somewhere with a public URL (e.g. Render), disabling
-this means anyone with the link can view and edit all the data — there's no
-protection at all. Fine for purely local/private use; not fine for a public
-deployment with real financial data in it.
+- Password is hashed (PBKDF2-SHA256) and stored in the settings table.
+- On login, we issue a signed, httponly cookie (via itsdangerous) — no server
+  session store needed, and it can't be read or forged from JS in the browser.
+- Every API route (except /api/auth/*) requires a valid cookie.
 """
 import os
 import hashlib
@@ -23,6 +19,10 @@ import models
 
 SECRET_KEY = os.getenv("LEDGER_SECRET_KEY")
 if not SECRET_KEY:
+    # Falls back to a random key generated at process start. This means
+    # sessions won't survive a server restart unless you set
+    # LEDGER_SECRET_KEY yourself — important on Render, since every
+    # spin-down/spin-up is a restart and would otherwise log you out.
     SECRET_KEY = secrets.token_hex(32)
 
 serializer = URLSafeTimedSerializer(SECRET_KEY, salt="ledger-session")
@@ -58,5 +58,13 @@ def verify_session_token(token: str) -> bool:
 
 
 def require_auth(request: Request, db: Session = Depends(get_db)) -> None:
-    # Password protection disabled — every request passes through.
-    return
+    settings = db.query(models.Settings).first()
+
+    # First run: no password set yet — everything is open until you set one
+    # via POST /api/auth/set-password. This keeps first-time setup simple.
+    if settings is None or not settings.password_hash:
+        return
+
+    token = request.cookies.get(COOKIE_NAME)
+    if not token or not verify_session_token(token):
+        raise HTTPException(status_code=401, detail="Not authenticated")

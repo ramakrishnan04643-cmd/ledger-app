@@ -26,6 +26,21 @@ cp .env.example .env
 
 Open **http://127.0.0.1:8420** in your browser. The first time, you'll be asked to set a password — that's your app lock going forward.
 
+## Deploying to Render without losing your data
+
+**Important:** Render's free tier gives your service an ephemeral disk. Every time it spins down from inactivity and restarts, that disk is wiped — including your SQLite database. If you've deployed this to Render's free tier and seen your data vanish, this is why.
+
+The fix is to point the app at a real hosted database instead of a local file:
+
+1. Create a free Postgres database at [neon.tech](https://neon.tech) or [supabase.com](https://supabase.com) — no credit card needed, and unlike Render's own free Postgres, it doesn't expire after 30 days.
+2. Copy the connection string it gives you (starts with `postgres://` or `postgresql://`).
+3. On Render, go to your service → **Environment** → add a variable: `DATABASE_URL` = that connection string.
+4. Redeploy. The app automatically detects `DATABASE_URL` and uses Postgres instead of SQLite — no code changes needed on your end.
+
+Locally, if you don't set `DATABASE_URL`, it keeps using SQLite as before — nothing changes for local development.
+
+This fixes **data loss**. It does not fix the **cold-start delay** ("waking up" screen) — that's Render's free compute tier pausing your server after ~15 minutes idle, which only goes away on a paid instance type. The two are separate problems with separate causes.
+
 ## Setting up phone notifications
 
 1. Open the app **over HTTPS** — plain `http://` only works on `localhost`. If you're using Tailscale, run `tailscale serve https / http://localhost:8420` on your PC and open the `https://your-machine.tailXXXX.ts.net` address it gives you, instead of the bare IP.

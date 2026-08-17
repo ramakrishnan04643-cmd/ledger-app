@@ -4,6 +4,7 @@
 const api = {
   async get(path) {
     const r = await fetch(path, { credentials: "include" });
+    if (r.status === 401) { state.authed = false; render(); throw new Error("unauthorized"); }
     if (!r.ok) throw new Error((await r.json()).detail || "Request failed");
     return r.json();
   },
@@ -13,6 +14,7 @@ const api = {
       headers: { "Content-Type": "application/json" },
       body: body ? JSON.stringify(body) : undefined,
     });
+    if (r.status === 401) { state.authed = false; render(); throw new Error("unauthorized"); }
     if (!r.ok) throw new Error((await r.json()).detail || "Request failed");
     return r.json();
   },
@@ -150,9 +152,22 @@ const app = document.getElementById("app");
 // ---------------------------------------------------------------------------
 async function init() {
   try {
-    await loadAll();
-    state.authed = true;
-    render();
+    const status = await api.get("/api/auth/status");
+    state.passwordSet = status.password_set;
+    if (!status.password_set) {
+      state.authed = false;
+      renderSetup();
+      return;
+    }
+    try {
+      await api.get("/api/dashboard");
+      state.authed = true;
+      await loadAll();
+      render();
+    } catch {
+      state.authed = false;
+      renderLogin();
+    }
   } catch (e) {
     app.innerHTML = `<div class="card">Couldn't reach the server. Is the backend running? (${e.message})</div>`;
   }
@@ -186,17 +201,89 @@ async function refresh() {
 }
 
 // ---------------------------------------------------------------------------
+// auth screens
+// ---------------------------------------------------------------------------
+function renderSetup() {
+  app.innerHTML = `
+    <div class="login-wrap">
+      <div class="card login-card">
+        <div class="eyebrow" style="justify-content:center">🔒 Private ledger</div>
+        <h1 class="display" style="margin:6px 0 4px">Set a password</h1>
+        <p style="color:var(--muted);font-size:13px;margin-bottom:18px">This is your first time here. Choose a password to lock the app.</p>
+        <div class="field" style="text-align:left">
+          <label>PASSWORD</label>
+          <input id="setup-pw" type="password" placeholder="At least 4 characters" autofocus>
+        </div>
+        <div id="setup-error" style="color:var(--red);font-size:12px;margin-bottom:10px;min-height:14px"></div>
+        <button class="btn-primary" style="width:100%;justify-content:center" onclick="doSetup()">Set password &amp; continue</button>
+      </div>
+    </div>`;
+  document.getElementById("setup-pw").addEventListener("keydown", e => { if (e.key === "Enter") doSetup(); });
+}
+
+async function doSetup() {
+  const pw = document.getElementById("setup-pw").value;
+  try {
+    await api.post("/api/auth/set-password", { password: pw });
+    state.authed = true;
+    await loadAll();
+    render();
+  } catch (e) {
+    document.getElementById("setup-error").textContent = e.message;
+  }
+}
+
+function renderLogin() {
+  app.innerHTML = `
+    <div class="login-wrap">
+      <div class="card login-card">
+        <div class="eyebrow" style="justify-content:center">🔒 Private ledger</div>
+        <h1 class="display" style="margin:6px 0 4px">Enter password</h1>
+        <div class="field" style="text-align:left;margin-top:14px">
+          <label>PASSWORD</label>
+          <input id="login-pw" type="password" autofocus>
+        </div>
+        <div id="login-error" style="color:var(--red);font-size:12px;margin-bottom:10px;min-height:14px"></div>
+        <button class="btn-primary" style="width:100%;justify-content:center" onclick="doLogin()">Unlock</button>
+      </div>
+    </div>`;
+  document.getElementById("login-pw").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
+}
+
+async function doLogin() {
+  const pw = document.getElementById("login-pw").value;
+  try {
+    await api.post("/api/auth/login", { password: pw });
+    state.authed = true;
+    await loadAll();
+    render();
+  } catch (e) {
+    document.getElementById("login-error").textContent = e.message;
+  }
+}
+
+async function doLogout() {
+  await api.post("/api/auth/logout");
+  state.authed = false;
+  renderLogin();
+}
+
+// ---------------------------------------------------------------------------
 // main render
 // ---------------------------------------------------------------------------
 function render() {
+  if (state.authed === false) { renderLogin(); return; }
+  if (state.authed !== true) return;
+
   app.innerHTML = `
     <div class="header">
       <div>
-        <div class="eyebrow">Ledger</div>
+        <div class="eyebrow">🔒 Ledger</div>
         <h1 class="display" style="margin:0;font-size:24px">Collections</h1>
       </div>
       <div style="display:flex;gap:8px">
         <button class="btn-outline" onclick="downloadBackup()">⬇ Backup</button>
+        <button class="btn-outline" onclick="doLogout()">Lock</button>
       </div>
     </div>
     <div class="tabs">
