@@ -17,6 +17,7 @@ load_dotenv()
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.pool import NullPool
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -25,7 +26,19 @@ if DATABASE_URL:
     # "postgres://", but SQLAlchemy 2.x requires the "postgresql://" form.
     if DATABASE_URL.startswith("postgres://"):
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-    engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+    engine = create_engine(
+        DATABASE_URL,
+        poolclass=NullPool,   # IMPORTANT when connecting through a transaction-mode
+                               # pooler (e.g. Supabase's Supavisor on port 6543): the
+                               # pooler already manages connection reuse, so SQLAlchemy
+                               # keeping its own persistent pool on top of it causes
+                               # connections to go stale and requests to silently stall.
+                               # Each request just opens a fresh connection through the
+                               # pooler and closes it — the pooler is what makes this cheap.
+        connect_args={
+            "connect_timeout": 10,  # fail fast instead of hanging if the host/network is unreachable
+        },
+    )
 else:
     DB_PATH = os.getenv("LEDGER_DB_PATH", os.path.join(os.path.dirname(__file__), "ledger.db"))
     DATABASE_URL = f"sqlite:///{DB_PATH}"
