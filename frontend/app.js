@@ -281,8 +281,9 @@ function render() {
         <div class="eyebrow">🔒 Ledger</div>
         <h1 class="display" style="margin:0;font-size:24px">Collections</h1>
       </div>
-      <div style="display:flex;gap:8px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
         <button class="btn-outline" onclick="downloadBackup()">⬇ Backup</button>
+        <button class="btn-outline" onclick="openModal('changePassword')">🔑 Password</button>
         <button class="btn-outline" onclick="doLogout()">Lock</button>
       </div>
     </div>
@@ -805,8 +806,28 @@ function renderModal() {
         <div id="sv-error" style="color:var(--red);font-size:12px;margin-bottom:8px;min-height:14px"></div>
         <button class="btn-primary" style="width:100%;justify-content:center" onclick="submitSavingsEntry()">Save entry</button>
       </div>`;
+  } else if (state.modal === "changePassword") {
+    overlay.innerHTML = `
+      <div class="modal">
+        <div class="modal-header"><div class="display" style="font-size:16px;font-weight:600">Change password</div><button onclick="closeModal()">✕</button></div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:14px">This replaces your app lock. You'll use the new password next time you unlock — on this and any other device.</div>
+        <div class="field"><label>CURRENT PASSWORD</label><input id="cp-current" type="password" autocomplete="current-password" autofocus></div>
+        <div class="field"><label>NEW PASSWORD</label><input id="cp-new" type="password" autocomplete="new-password" placeholder="At least 4 characters"></div>
+        <div class="field"><label>CONFIRM NEW PASSWORD</label><input id="cp-confirm" type="password" autocomplete="new-password"></div>
+        <div id="cp-status" style="color:var(--red);font-size:12px;margin-bottom:10px;min-height:14px"></div>
+        <button class="btn-primary" style="width:100%;justify-content:center" onclick="submitChangePassword()">Update password</button>
+      </div>`;
   }
   document.body.appendChild(overlay);
+
+  // Enter-to-submit on the password form, matching the login/setup screens.
+  if (state.modal === "changePassword") {
+    const onEnter = e => { if (e.key === "Enter") submitChangePassword(); };
+    ["cp-current", "cp-new", "cp-confirm"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener("keydown", onEnter);
+    });
+  }
 }
 
 async function submitAddPerson() {
@@ -906,6 +927,31 @@ async function submitSavingsEntry() {
 async function deleteSavingsEntry(id) {
   await api.delete(`/api/savings-log/${id}`);
   await refresh();
+}
+
+// ---------------------------------------------------------------------------
+// change password (while logged in)
+// ---------------------------------------------------------------------------
+async function submitChangePassword() {
+  const current = document.getElementById("cp-current").value;
+  const next = document.getElementById("cp-new").value;
+  const confirmPw = document.getElementById("cp-confirm").value;
+  const status = document.getElementById("cp-status");
+  status.style.color = "var(--red)";
+  if (!current) { status.textContent = "Enter your current password."; return; }
+  if (next.length < 4) { status.textContent = "New password must be at least 4 characters."; return; }
+  if (next !== confirmPw) { status.textContent = "New passwords don't match."; return; }
+  if (next === current) { status.textContent = "New password must be different from the current one."; return; }
+  try {
+    await api.post("/api/auth/change-password", { current_password: current, new_password: next });
+    status.style.color = "var(--green)";
+    status.textContent = "✓ Password updated. Use it next time you unlock.";
+    setTimeout(() => { if (state.modal === "changePassword") closeModal(); }, 1200);
+  } catch (e) {
+    // The backend returns 400 (not 401) for a wrong current password, so this
+    // stays inside the modal instead of bouncing to the lock screen.
+    status.textContent = e.message;
+  }
 }
 
 // ---------------------------------------------------------------------------

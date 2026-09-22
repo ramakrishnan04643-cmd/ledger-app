@@ -133,6 +133,29 @@ def logout(response: Response):
     return {"ok": True}
 
 
+@app.post("/api/auth/change-password", dependencies=[Depends(auth.require_auth)])
+def change_password(body: schemas.ChangePasswordRequest, response: Response, db: Session = Depends(get_db)):
+    settings = db.query(models.Settings).first()
+    if not settings or not settings.password_hash:
+        raise HTTPException(400, "No password set yet.")
+    # A wrong CURRENT password is a bad request, not a 401 — the session is
+    # still valid. Using 401 here would trip the frontend's global "session
+    # expired -> show lock screen" handler and boot the user out mid-edit.
+    if not auth.verify_password(body.current_password, settings.password_hash):
+        raise HTTPException(400, "Current password is incorrect.")
+    if len(body.new_password) < 4:
+        raise HTTPException(400, "New password must be at least 4 characters.")
+    settings.password_hash = auth.hash_password(body.new_password)
+    db.commit()
+    # Re-issue the session cookie so this device stays logged in and its 30-day
+    # window restarts. (Sessions are signed with LEDGER_SECRET_KEY, not the
+    # password, so existing cookies aren't invalidated by the change.)
+    token = auth.create_session_token()
+    response.set_cookie(auth.COOKIE_NAME, token, httponly=True, samesite="lax",
+                         max_age=auth.SESSION_MAX_AGE)
+    return {"ok": True}
+
+
 # ---------------------------------------------------------------------------
 # people
 # ---------------------------------------------------------------------------

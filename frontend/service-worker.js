@@ -8,7 +8,7 @@
 // and only falls back to the cached copy if the network request fails
 // (e.g. offline). This means you always see your latest changes and the
 // cache is purely a fallback, not a way updates can get "stuck".
-const CACHE_NAME = "ledger-shell-v2";
+const CACHE_NAME = "ledger-shell-v3";
 const SHELL_FILES = [
   "/",
   "/static/style.css",

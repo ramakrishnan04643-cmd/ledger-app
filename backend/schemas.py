@@ -12,6 +12,11 @@ class SetPasswordRequest(BaseModel):
     password: str
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
 # ---------- people ----------
 class PersonCreate(BaseModel):
     name: str
