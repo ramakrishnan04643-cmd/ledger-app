@@ -1,0 +1,26 @@
+name: keep-alive
+
+# Pings the app on a schedule so the Supabase database (and the Render web
+# service) never sit idle long enough to auto-pause. Requesting
+# /api/auth/status runs a real DB query, which resets Supabase's inactivity
+# timer. No secrets, credentials, or data are involved.
+
+on:
+  schedule:
+    - cron: "17 6 */2 * *"    # every ~2 days at 06:17 UTC (well under Supabase's 7-day idle pause)
+  workflow_dispatch: {}        # also runnable on demand from the Actions tab
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping app (wakes Render, touches Supabase)
+        run: |
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 90 \
+              "https://ledger-app-14w3.onrender.com/api/auth/status" || echo "000")
+            echo "attempt $i -> HTTP $code"
+            [ "$code" = "200" ] && exit 0
+            sleep 30
+          done
+          echo "No 200 after retries (app may be down)"; exit 1
