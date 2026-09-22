@@ -719,6 +719,8 @@ def summary(db: Session = Depends(get_db)):
 def backup(db: Session = Depends(get_db)):
     people = db.query(models.Person).all()
     expenses = db.query(models.Expense).all()
+    categories = db.query(models.ExpenseCategory).all()
+    savings = db.query(models.SavingsEntry).all()
     settings = get_or_create_settings(db)
 
     data = {
@@ -732,7 +734,8 @@ def backup(db: Session = Depends(get_db)):
                 "payments": [
                     {"month": pay.month, "due_date": pay.due_date.isoformat(),
                      "paid_amount": pay.paid_amount,
-                     "paid_date": pay.paid_date.isoformat() if pay.paid_date else None}
+                     "paid_date": pay.paid_date.isoformat() if pay.paid_date else None,
+                     "note": pay.note}
                     for pay in p.payments
                 ],
             }
@@ -741,6 +744,11 @@ def backup(db: Session = Depends(get_db)):
         "expenses": [
             {"date": e.date.isoformat(), "category": e.category, "amount": e.amount, "note": e.note}
             for e in expenses
+        ],
+        "expense_categories": [c.name for c in categories],
+        "savings_log": [
+            {"date": s.date.isoformat(), "amount": s.amount, "note": s.note}
+            for s in savings
         ],
         "settings": {
             "cash_balance": settings.cash_balance,
