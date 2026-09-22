@@ -1,0 +1,50 @@
+name: cloud-backup
+
+# Daily backup of the ledger database, emailed to you as a JSON attachment.
+# Runs entirely in GitHub's cloud — no PC or phone needs to be on.
+#
+# Add these repository secrets first
+# (repo -> Settings -> Secrets and variables -> Actions -> New repository secret):
+#   DATABASE_URL   the Supabase connection string (same value as on Render)
+#   MAIL_USERNAME  the email address that sends the backup (use a PERSONAL account)
+#   MAIL_PASSWORD  an app password for that account (Gmail: needs 2-Step Verification)
+#   MAIL_TO        where to send the backup (your email — can be the same address)
+#
+# Defaults below assume Gmail; change server_address/server_port for another provider.
+
+on:
+  schedule:
+    - cron: "30 6 * * *"     # every day at 06:30 UTC
+  workflow_dispatch: {}        # also runnable on demand from the Actions tab
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install driver
+        run: pip install --quiet pg8000
+
+      - name: Create backup file
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python scripts/cloud_backup.py "ledger-backup-$(date -u +%Y-%m-%d).json"
+
+      - name: Email the backup
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com   # change if you don't use Gmail
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "Ledger backup — ${{ github.run_started_at }}"
+          to: ${{ secrets.MAIL_TO }}
+          from: Ledger Backup <${{ secrets.MAIL_USERNAME }}>
+          body: "Your automated Personal Ledger backup is attached (JSON)."
+          attachments: ledger-backup-*.json
